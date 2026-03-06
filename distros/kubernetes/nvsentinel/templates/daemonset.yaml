@@ -46,12 +46,12 @@ spec:
       securityContext:
         fsGroup: 65532
       {{- end }}
-      {{- if or .Values.global.auditLogging.enabled (and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql")) }}
+      {{- if or .Values.global.auditLogging.enabled (and .Values.platformConnector.postgresqlStore.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql")) }}
       initContainers:
         {{- if .Values.global.auditLogging.enabled }}
         {{- include "nvsentinel.auditLogging.initContainer" . | nindent 8 }}
         {{- end }}
-      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.platformConnector.postgresqlStore.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
         - name: fix-cert-permissions
           image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
           imagePullPolicy: {{ .Values.global.initContainerImage.pullPolicy }}

@@ -779,8 +779,14 @@ func ConstructClientTLSConfig(
 
 func pollTillCACertIsMountedSuccessfully(certPath string, timeoutInterval time.Duration,
 	pingInterval time.Duration) ([]byte, error) {
-	if certPath == "" || !filepath.IsAbs(certPath) {
-		slog.Info("No valid CA cert path configured, skipping TLS certificate loading", "path", certPath)
+	if certPath == "" {
+		slog.Info("No CA cert path configured, TLS will be disabled")
+		return nil, nil
+	}
+	if !filepath.IsAbs(certPath) {
+		slog.Warn("CA cert path is not absolute, TLS will be disabled. "+
+			"If this is unintentional, ensure the cert mount path starts with /",
+			"path", certPath)
 		return nil, nil
 	}
 

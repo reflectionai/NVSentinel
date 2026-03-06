@@ -41,7 +41,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "health-events-analyzer.fullname" . }}
-      {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
+      {{- if and .Values.clientCertMountPath .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
       initContainers:
         - name: fix-cert-permissions
           image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
