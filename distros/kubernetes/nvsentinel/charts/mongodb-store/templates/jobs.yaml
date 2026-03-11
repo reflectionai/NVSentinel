@@ -250,8 +250,10 @@ spec:
             echo "=============================="
 
             until mongosh "$MONGODB_URI" \
+              {{- if .Values.mongodb.auth.enabled }}
               --authenticationMechanism SCRAM-SHA-256 \
               --username {{ $rootUsername }} --password "$MONGODB_ROOT_PASSWORD" --authenticationDatabase admin \
+              {{- end }}
               {{- if .Values.mongodb.tls.enabled }}
               --tls \
               --tlsCAFile /certs/ca.crt \
@@ -304,29 +306,44 @@ spec:
                     'healthevent.generatedtimestamp.seconds': 1
                   });
                 {{- if .Values.mongodb.tls.enabled }}
-                // Check if user exists before creating (X.509 users, TLS only)
+                // Create X.509 users (TLS only)
                 var userExists = db.getSiblingDB('\$external').getUser('$MONGODB_APPLICATION_USER_DN');
                 if (userExists) {
                   print('User already exists, skipping creation.');
                 } else {
-                  print('Creating new user...');
+                  print('Creating new X.509 user...');
                   db.getSiblingDB('\$external').runCommand({
                     createUser: '$MONGODB_APPLICATION_USER_DN',
                     roles: [{ role: 'readWrite', db: '$MONGODB_DATABASE_NAME' }]
                   });
-                  print('User created successfully.');
+                  print('X.509 user created successfully.');
                 }
-                // Check if dgxcops user exists before creating
                 var dgxcopsUserExists = db.getSiblingDB('\$external').getUser('$MONGODB_DGXCOPS_USER_DN');
                 if (dgxcopsUserExists) {
                   print('Dgxcops user already exists, skipping creation.');
                 } else {
-                  print('Creating new dgxcops user...');
+                  print('Creating new dgxcops X.509 user...');
                   db.getSiblingDB('\$external').runCommand({
                     createUser: '$MONGODB_DGXCOPS_USER_DN',
                     roles: [{ role: 'read', db: '$MONGODB_DATABASE_NAME' }]
                   });
-                  print('Dgxcops user created successfully.');
+                  print('Dgxcops X.509 user created successfully.');
+                }
+                {{- else }}
+                // Create SCRAM application user (non-TLS mode)
+                var scramUser = db.getUser('$MONGODB_SCRAM_APP_USERNAME');
+                if (scramUser) {
+                  print('SCRAM application user already exists, updating password...');
+                  db.changeUserPassword('$MONGODB_SCRAM_APP_USERNAME', '$MONGODB_SCRAM_APP_PASSWORD');
+                  print('SCRAM application user password updated.');
+                } else {
+                  print('Creating SCRAM application user...');
+                  db.createUser({
+                    user: '$MONGODB_SCRAM_APP_USERNAME',
+                    pwd: '$MONGODB_SCRAM_APP_PASSWORD',
+                    roles: [{ role: 'readWrite', db: '$MONGODB_DATABASE_NAME' }]
+                  });
+                  print('SCRAM application user created successfully.');
                 }
                 {{- end }}"
             do
@@ -359,6 +376,16 @@ spec:
             value: "CN=mongo-user-client,OU=DGXC,O=Nvidia,L=SantaClara,ST=California,C=US"
           - name: MONGODB_DGXCOPS_USER_DN
             value: "CN=mongo-dgxcops-client,OU=DGXC,O=Nvidia,L=SantaClara,ST=California,C=US"
+          {{- if not .Values.mongodb.tls.enabled }}
+          - name: MONGODB_SCRAM_APP_USERNAME
+            value: {{ .Values.scramAppUser.username | default "nvsentinel" | quote }}
+          - name: MONGODB_SCRAM_APP_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Values.scramAppUser.existingSecret | default $passwordSecretName }}
+                key: {{ .Values.scramAppUser.passwordKey | default "mongodb-app-password" }}
+                optional: true
+          {{- end }}
         envFrom:
           - configMapRef:
               name: mongodb-config

@@ -113,6 +113,8 @@ spec:
           - "--dry-run={{ .Values.global.dryRun }}"
           {{- if .Values.clientCertMountPath }}
           - "--database-client-cert-mount-path={{ .Values.clientCertMountPath }}"
+          {{- else }}
+          - "--tls-enabled=false"
           {{- end }}
           volumeMounts:
           - name: config-volume

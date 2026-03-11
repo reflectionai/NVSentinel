@@ -629,16 +629,22 @@ func constructMongoClientOptions(
 		clientOpts.SetAppName(mongoConfig.AppName)
 	}
 
-	// Only set TLS + X.509 auth when TLS config was successfully built.
-	// When cert paths are empty or certs don't exist, tlsConfig is nil
-	// and we connect without TLS (plaintext with URI-based auth).
+	// Only set TLS when TLS config was successfully built.
+	// Only set X.509 auth when client certificate is available (CA-only
+	// TLS should not attempt X.509 auth since there's no client cert).
+	// When certificate rotation is enabled, the client certificate is
+	// provided dynamically via GetClientCertificate rather than the
+	// Certificates slice.
 	if tlsConfig != nil {
-		credential := options.Credential{
-			AuthMechanism: "MONGODB-X509",
-			AuthSource:    "$external",
-		}
+		clientOpts.SetTLSConfig(tlsConfig)
 
-		clientOpts.SetTLSConfig(tlsConfig).SetAuth(credential)
+		if len(tlsConfig.Certificates) > 0 || tlsConfig.GetClientCertificate != nil {
+			credential := options.Credential{
+				AuthMechanism: "MONGODB-X509",
+				AuthSource:    "$external",
+			}
+			clientOpts.SetAuth(credential)
+		}
 	}
 
 	return clientOpts, nil
@@ -719,10 +725,21 @@ func constructStaticTLSConfig(mongoConfig MongoDBConfig) (*tls.Config, error) {
 		return nil, nil
 	}
 
-	// Load client certificate and key
+	// Load client certificate and key. If the files don't exist, fall back
+	// to CA-only TLS (server verification without client cert) rather than
+	// failing — the cert mount may not be present.
 	clientCert, err := tls.LoadX509KeyPair(mongoConfig.ClientTLSCertConfig.TlsCertPath,
 		mongoConfig.ClientTLSCertConfig.TlsKeyPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			slog.Warn("Client certificate or key not found, using CA-only TLS (no mTLS)",
+				"certPath", mongoConfig.ClientTLSCertConfig.TlsCertPath,
+				"keyPath", mongoConfig.ClientTLSCertConfig.TlsKeyPath)
+			return &tls.Config{
+				RootCAs:    caCertPool,
+				MinVersion: tls.VersionTLS12,
+			}, nil
+		}
 		return nil, fmt.Errorf("failed to load client certificate and key: %w", err)
 	}
 
@@ -733,6 +750,11 @@ func constructStaticTLSConfig(mongoConfig MongoDBConfig) (*tls.Config, error) {
 	}, nil
 }
 
+// ConstructClientTLSConfig builds a TLS configuration from certificates at the
+// given mount path. Returns (nil, nil) when clientCertMountPath is empty,
+// indicating TLS is intentionally disabled. Returns a non-nil *tls.Config with
+// RootCAs and client certificates when certs are found. Returns an error for
+// invalid cert paths, unreadable files, or malformed certificates.
 func ConstructClientTLSConfig(
 	totalCACertTimeoutSeconds int, intervalCACertSeconds int, clientCertMountPath string,
 ) (*tls.Config, error) {
@@ -764,9 +786,18 @@ func ConstructClientTLSConfig(
 		return nil, fmt.Errorf("failed to append CA certificate to pool")
 	}
 
-	// Load client certificate and key
+	// Load client certificate and key. If the files don't exist, fall back
+	// to CA-only TLS (server verification without client cert).
 	clientCert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			slog.Warn("Client certificate or key not found, using CA-only TLS (no mTLS)",
+				"certPath", clientCertPath, "keyPath", clientKeyPath)
+			return &tls.Config{
+				RootCAs:    caCertPool,
+				MinVersion: tls.VersionTLS12,
+			}, nil
+		}
 		return nil, fmt.Errorf("failed to load client certificate and key: %w", err)
 	}
 
@@ -784,10 +815,8 @@ func pollTillCACertIsMountedSuccessfully(certPath string, timeoutInterval time.D
 		return nil, nil
 	}
 	if !filepath.IsAbs(certPath) {
-		slog.Warn("CA cert path is not absolute, TLS will be disabled. "+
-			"If this is unintentional, ensure the cert mount path starts with /",
-			"path", certPath)
-		return nil, nil
+		return nil, fmt.Errorf("CA cert path %q is not absolute — this is likely a misconfiguration. "+
+			"Use --tls-enabled=false to explicitly disable TLS, or provide an absolute cert mount path", certPath)
 	}
 
 	timeout := time.Now().Add(timeoutInterval) // total timeout

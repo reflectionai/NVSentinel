@@ -117,10 +117,14 @@ spec:
           {{- if and .Values.global.datastore (eq .Values.global.datastore.provider "postgresql") }}
           {{- if .Values.platformConnector.postgresqlStore.clientCertMountPath }}
           - "--database-client-cert-mount-path={{ .Values.platformConnector.postgresqlStore.clientCertMountPath }}"
+          {{- else }}
+          - "--tls-enabled=false"
           {{- end }}
           {{- else }}
           {{- if .Values.platformConnector.mongodbStore.clientCertMountPath }}
           - "--mongo-client-cert-mount-path={{ .Values.platformConnector.mongodbStore.clientCertMountPath }}"
+          {{- else }}
+          - "--tls-enabled=false"
           {{- end }}
           {{- end }}
           - "--socket={{ .Values.socketPath }}"
