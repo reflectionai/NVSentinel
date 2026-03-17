@@ -448,3 +448,4 @@ tests/scale-tests/results/*.csv
 tests/scale-tests/cmd/fqm-scale-test/results/
 preflight-checks/dcgm-diag/dcgm-diag
 preflight/preflight
+nvsentinel-0.9.0-reflection.3.tgz

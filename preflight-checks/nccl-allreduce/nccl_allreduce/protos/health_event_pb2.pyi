@@ -29,6 +29,7 @@ class RecommendedAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     RESTART_BM: _ClassVar[RecommendedAction]
     REPLACE_VM: _ClassVar[RecommendedAction]
     RUN_DCGMEUD: _ClassVar[RecommendedAction]
+    REMEDIATE: _ClassVar[RecommendedAction]
     UNKNOWN: _ClassVar[RecommendedAction]
 UNSPECIFIED: ProcessingStrategy
 EXECUTE_REMEDIATION: ProcessingStrategy
@@ -41,6 +42,7 @@ RESTART_VM: RecommendedAction
 RESTART_BM: RecommendedAction
 REPLACE_VM: RecommendedAction
 RUN_DCGMEUD: RecommendedAction
+REMEDIATE: RecommendedAction
 UNKNOWN: RecommendedAction
 
 class OperationStatus(_message.Message):

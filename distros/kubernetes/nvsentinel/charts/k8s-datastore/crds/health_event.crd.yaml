@@ -64,6 +64,8 @@ spec:
                     - "REPLACE_VM"
                     - 26
                     - "RUN_DCGMEUD"
+                    - 27
+                    - "REMEDIATE"
                     - 99
                     - "UNKNOWN"
                   format: enum
