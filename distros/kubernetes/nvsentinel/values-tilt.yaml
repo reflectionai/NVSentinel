@@ -90,6 +90,9 @@ global:
   kubernetesObjectMonitor:
     enabled: true
 
+  slurmDrainMonitor:
+    enabled: true
+
   eventExporter:
     enabled: true
 
@@ -3745,6 +3748,13 @@ health-events-analyzer:
 janitor:
   config:
     cspProviderHost: "janitor-provider.nvsentinel.svc.cluster.local:50051"
+    cspProvider:
+      tls:
+        enabled: true
+        caSecretName: "janitor-provider-grpc-cert"
+      auth:
+        enabled: true
+        audience: "nvsentinel-csp-provider"
     controllers:
       gpuReset:
         enabled: true
@@ -3783,6 +3793,16 @@ janitor:
 
 janitorProvider:
   csp: kind
+  tls:
+    enabled: true
+  auth:
+    enabled: true
+
+janitor-provider:
+  tls:
+    enabled: true
+  auth:
+    enabled: true
 
 labeler:
   logLevel: debug
@@ -3820,6 +3840,7 @@ platformConnector:
   k8sConnector:
     enabled: true
     maxNodeConditionMessageLength: 1024
+    compactedHealthEventMsgLen: 72
     qps: 5.0
     burst: 10
   

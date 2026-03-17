@@ -138,6 +138,7 @@ include('../health-monitors/gpu-health-monitor/Tiltfile')
 include('../health-monitors/csp-health-monitor/Tiltfile')
 include('../health-monitors/kubernetes-object-monitor/Tiltfile')
 include('../health-monitors/syslog-health-monitor/Tiltfile')
+include('../health-monitors/slurm-drain-monitor/Tiltfile')
 include('../labeler/Tiltfile')
 include('../log-collector/Tiltfile')
 include('../preflight/Tiltfile')
@@ -223,7 +224,8 @@ else:
 preflight_enabled = effective_values.get('global', {}).get('preflight', {}).get('enabled', False)
 cert_manager_objects = [
     'janitor-webhook-cert:certificate',
-    'janitor-selfsigned-issuer:issuer'
+    'janitor-selfsigned-issuer:issuer',
+    'janitor-provider-grpc-cert:certificate'
 ]
 if preflight_enabled:
     cert_manager_objects.extend([
@@ -265,14 +267,20 @@ local_resource(
     resource_deps=['cert-manager-resources'],
 )
 
+local_resource(
+    'wait-for-janitor-provider-cert',
+    cmd='kubectl wait --for=condition=Ready --timeout=300s certificate/janitor-provider-grpc-cert -n nvsentinel',
+    resource_deps=['cert-manager-resources'],
+)
+
 k8s_resource(
     'janitor',
-    resource_deps=['wait-for-janitor-cert'],
+    resource_deps=['wait-for-janitor-cert', 'wait-for-janitor-provider-cert'],
 )
 
 k8s_resource(
     'janitor-provider',
-    resource_deps=['janitor'],
+    resource_deps=['janitor', 'wait-for-janitor-provider-cert'],
 )
 
 if use_percona:
@@ -333,6 +341,11 @@ k8s_resource(
 
 k8s_resource(
     'kubernetes-object-monitor',
+    resource_deps=['platform-connectors']
+)
+
+k8s_resource(
+    'slurm-drain-monitor',
     resource_deps=['platform-connectors']
 )
 
