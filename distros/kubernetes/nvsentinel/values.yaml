@@ -15,7 +15,7 @@
 global:
   dryRun: false
   image:
-    tag: "main"
+    tag: "5aa1693"
   initContainerImage:
     repository: docker.io/bitnamilegacy/os-shell
     tag: "12-debian-12-r30"
