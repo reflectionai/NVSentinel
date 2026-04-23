@@ -20,10 +20,12 @@
 # Build from repository root:
 #   docker build -t preflight-nccl-allreduce -f preflight-checks/nccl-allreduce/Dockerfile .
 
-# PyTorch version determines CUDA runtime version - must match cluster's GPU driver
+# PyTorch version determines CUDA runtime version - must be compatible with
+# the oldest GPU driver across all clusters.  Driver 570.x (Crusoe) supports
+# up to CUDA 12.8; driver 580.x (VP, GCP) supports CUDA 13.x.  Using 25.03
+# (CUDA 12.8) ensures the container runs everywhere.
 # See: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html#id4
-#   26.03-py3 = CUDA 13.2 (Ubuntu 24.04, Python 3.12)
-ARG PYTORCH_VERSION=26.03-py3
+ARG PYTORCH_VERSION=25.03-py3
 ARG VERSION="0.1.0"
 
 # =============================================================================
