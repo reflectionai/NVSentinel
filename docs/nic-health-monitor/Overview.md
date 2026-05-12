@@ -110,10 +110,10 @@ The NIC Health Monitor follows NVSentinel's established architectural pattern:
 
 This monitor uses a binary severity model based on **workload impact**:
 
-| Severity      | Meaning                                  | Example                                                    |
-|---------------|------------------------------------------|------------------------------------------------------------|
-| **Fatal**     | Workload WILL fail or HAS failed         | NIC DOWN, `cmd_exec timeout`, unrecoverable hardware error |
-| **Non-Fatal** | Degradation detected, workload continues | Symbol errors, congestion, insufficient power              |
+| Severity      | Meaning                                  | Example                                                          |
+|---------------|------------------------------------------|------------------------------------------------------------------|
+| **Fatal**     | Workload WILL fail or HAS failed         | NIC DOWN, `cmd_exec timeout`, unrecoverable hardware error       |
+| **Non-Fatal** | Degradation detected, workload continues | Symbol errors, congestion, insufficient power, `NETDEV WATCHDOG` |
 
 **Key Design Principle**: The only question that matters is **"Will the running workload fail because of this?"**
 
@@ -139,7 +139,9 @@ This monitor uses a binary severity model based on **workload impact**:
 │                                                                            │
 │  LAYER 2: LINK COUNTER DETECTION                                           │
 │  ═══════════════════════════════                                           │
-│  • Polling interval: 5 seconds                                             │
+│  • Polling interval: 1 second                                              │
+│  • Velocity thresholds gate themselves on the configured velocityUnit      │
+│    (1s / 1m / 1h), so a fast poll is safe for every counter type.          │
 │  • Data source: /sys/class/infiniband/<dev>/ports/<port>/counters/         │
 │  • Detects: Symbol errors, link flaps, buffer overruns, transport errors   │
 │  • Documentation: link-counter-detection.md                                │
@@ -181,7 +183,7 @@ This monitor uses a binary severity model based on **workload impact**:
 ## Key Capabilities
 
 1. **Deterministic failure thresholds** from IBTA specifications, cloud provider heuristics (Azure, AWS), and vendor documentation
-2. **Fully configurable counters and thresholds** - operators can define which counters to monitor, set custom thresholds (delta or velocity-based), and configure fatal/non-fatal severity per counter
+2. **Allowlisted counter configuration** - operators can choose from NIC-relevant counters, set custom thresholds (delta or velocity-based), and configure fatal/non-fatal severity per counter
 3. **Rate-based degradation detection** via centralized Health Events Analyzer rules
 4. **Pre-failure prediction** by detecting BER climbing before FEC exhaustion (IBTA 10E-12 BER threshold: 120 errors/hour)
 5. **Kernel log monitoring** integrated into the existing syslog-health-monitor with NIC-specific check patterns
@@ -206,14 +208,14 @@ This monitor uses a binary severity model based on **workload impact**:
 |-------------------------|------------------------------------------------------------------------------------------------------------------------------------|----------------------------------|
 | **Degradation Monitor** | `link_downed` (Delta > 0), `excessive_buffer_overrun_errors` (any), `local_link_integrity_errors` (any), `rnr_nak_retry_err` (any) | **RecommendedAction_REPLACE_VM** |
 
-> **Note**: All counter thresholds and severity levels are configurable. See [Link Counter Detection](./link-counter-detection.md#10-configuration) for customization options.
+> **Note**: Counter thresholds are configurable for the hardcoded allowed counter set. Severity and sysfs paths are owned by the monitor definitions. See [Link Counter Detection](./link-counter-detection.md#10-configuration) for customization options.
 
 ### Syslog Detection (Fatal & Non-Fatal)
 
-| Source          | Conditions                                                                         | Severity      | Purpose                               |
-|-----------------|------------------------------------------------------------------------------------|---------------|---------------------------------------|
-| **Log Watcher** | `mlx5_core.*cmd_exec timeout`, `health poll failed`, `unrecoverable`, `PCIe Fatal` | **Fatal**     | Deterministic hardware/driver failure |
-| **Log Watcher** | `insufficient power`, `module absent`, `ACCESS_REG failed`                         | **Non-Fatal** | Diagnostic context for correlation    |
+| Source          | Conditions                                                                                                          | Severity      | Purpose                               |
+|-----------------|---------------------------------------------------------------------------------------------------------------------|---------------|---------------------------------------|
+| **Log Watcher** | `mlx5_core.*cmd_exec timeout`, `health poll failed`, `unrecoverable`                                                | **Fatal**     | Deterministic hardware/driver failure |
+| **Log Watcher** | `insufficient power`, `module absent`, `ACCESS_REG failed`, `NETDEV WATCHDOG` (TX queue timeout - auto-recoverable) | **Non-Fatal** | Diagnostic context for correlation    |
 
 > **Design Note**: Deterministically fatal events in logs trigger `REPLACE_VM` (emitted as `IsFatal=true`). Diagnostic logs are published as non-fatal events (`IsFatal=false`) for correlation and do not directly trigger automated remediation.
 

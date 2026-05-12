@@ -31,13 +31,20 @@ resources:
 # Available checks:
 #   - InfiniBandStateCheck: Monitors IB port state (UP/DOWN), physical state, device disappearance,
 #       card homogeneity anomalies; auto-excludes management NICs via NUMA topology
+#   - InfiniBandDegradationCheck: Monitors IB counter thresholds (fatal and non-fatal)
 #   - EthernetStateCheck: Monitors Ethernet/RoCE interface state (operstate), device disappearance,
 #       card homogeneity anomalies; auto-excludes management NICs via NUMA topology
+#   - EthernetDegradationCheck: Monitors Ethernet/RoCE counter thresholds
 enabledChecks:
   - InfiniBandStateCheck
+  - InfiniBandDegradationCheck
   - EthernetStateCheck
+  - EthernetDegradationCheck
 
-# Polling intervals for state monitoring
+# Polling interval for state checks. Counter checks run on their own
+# fixed 1s cadence (not configurable here) so delta counters stay
+# responsive and velocity windows have fresh data; this is independent
+# of statePollingInterval.
 statePollingInterval: "1s"
 
 # Regex patterns for NICs to exclude from monitoring (comma-separated)
@@ -52,6 +59,111 @@ nicInclusionRegexOverride: ""
 # sysfs paths (for containerized deployments with host mounts)
 sysClassNetPath: "/nvsentinel/sys/class/net"
 sysClassInfinibandPath: "/nvsentinel/sys/class/infiniband"
+
+# Counter detection configuration
+counterDetection:
+  enabled: true
+  # Counter names are validated against hardcoded definitions in the monitor.
+  # Operators may enable/disable supported counters and tune thresholds, but
+  # sysfs paths, severity, and event descriptions are owned by code.
+  #
+  # Allowed counters:
+  #   counters/: excessive_buffer_overrun_errors, link_downed,
+  #     link_error_recovery, local_link_integrity_errors,
+  #     port_rcv_discards, port_rcv_errors, port_rcv_remote_physical_errors,
+  #     port_rcv_switch_relay_errors, port_xmit_discards, port_xmit_wait,
+  #     symbol_error, symbol_error_fatal
+  #   hw_counters/: implied_nak_seq_err, local_ack_timeout_err,
+  #     out_of_sequence, packet_seq_err, req_transport_retries_exceeded,
+  #     rnr_nak_retry_err, roce_slow_restart
+  #   statistics/: carrier_changes, rx_crc_errors, rx_errors,
+  #     rx_missed_errors, tx_carrier_errors, tx_errors
+  #
+  # Example allowed-counter customization:
+  #   - name: rx_missed_errors
+  #     enabled: true
+  #     thresholdType: velocity
+  #     threshold: 10.0
+  #     velocityUnit: second
+  counters:
+    #--------------------------------------------------------------------------
+    # FATAL COUNTER PROFILES (severity/action owned by code)
+    #--------------------------------------------------------------------------
+    - name: link_downed
+      enabled: true
+      thresholdType: delta
+      threshold: 0
+
+    - name: excessive_buffer_overrun_errors
+      enabled: true
+      thresholdType: delta
+      threshold: 0
+
+    - name: local_link_integrity_errors
+      enabled: true
+      thresholdType: delta
+      threshold: 0
+
+    - name: rnr_nak_retry_err
+      enabled: true
+      thresholdType: delta
+      threshold: 0
+
+    #--------------------------------------------------------------------------
+    # NON-FATAL COUNTER PROFILES (severity/action owned by code)
+    #--------------------------------------------------------------------------
+
+    # Physical Layer (PHY)
+    - name: symbol_error
+      enabled: true
+      thresholdType: velocity
+      threshold: 10.0
+      velocityUnit: second
+
+    - name: symbol_error_fatal
+      enabled: true
+      thresholdType: velocity
+      threshold: 120.0
+      velocityUnit: hour
+
+    - name: link_error_recovery
+      enabled: true
+      thresholdType: velocity
+      threshold: 5.0
+      velocityUnit: minute
+
+    # Transport Layer
+    - name: port_rcv_errors
+      enabled: true
+      thresholdType: velocity
+      threshold: 10.0
+      velocityUnit: second
+
+    - name: local_ack_timeout_err
+      enabled: true
+      thresholdType: velocity
+      threshold: 1.0
+      velocityUnit: second
+
+    # Congestion Indicators
+    - name: port_xmit_discards
+      enabled: true
+      thresholdType: velocity
+      threshold: 100.0
+      velocityUnit: second
+
+    # RoCE-specific
+    - name: roce_slow_restart
+      enabled: true
+      thresholdType: velocity
+      threshold: 10.0
+      velocityUnit: second
+
+    # Interface Level
+    - name: carrier_changes
+      enabled: true
+      thresholdType: delta
+      threshold: 2
 
 # Scheduling configuration
 nodeSelector: {}

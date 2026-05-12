@@ -24,3 +24,17 @@ data:
     nicInclusionRegexOverride = "{{ .Values.nicInclusionRegexOverride }}"
     sysClassNetPath = "{{ .Values.sysClassNetPath }}"
     sysClassInfinibandPath = "{{ .Values.sysClassInfinibandPath }}"
+
+    [counterDetection]
+    enabled = {{ .Values.counterDetection.enabled }}
+    {{- range .Values.counterDetection.counters }}
+
+    [[counterDetection.counters]]
+    name = {{ .name | quote }}
+    enabled = {{ .enabled }}
+    thresholdType = {{ .thresholdType | quote }}
+    threshold = {{ .threshold }}
+    {{- if .velocityUnit }}
+    velocityUnit = {{ .velocityUnit | quote }}
+    {{- end }}
+    {{- end }}
