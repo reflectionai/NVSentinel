@@ -526,7 +526,7 @@ func (w *EventWatcher) CancelLatestQuarantiningEvents(
 		latestEvent.HealthEventStatus.SpanIDs, tracing.ServicePlatformConnector)
 
 	ctx, eventSpan := tracing.StartSpanWithLinkFromTraceContext(
-		context.Background(), latestTraceID, platformConnectorSpanId,
+		ctx, latestTraceID, platformConnectorSpanId,
 		"fault_quarantine.cancel_latest_quarantining_events")
 	defer eventSpan.End()
 
