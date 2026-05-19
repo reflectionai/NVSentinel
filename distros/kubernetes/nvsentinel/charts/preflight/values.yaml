@@ -249,6 +249,10 @@ gpuResourceNames:
 # Network resource names to copy to init containers (RDMA, InfiniBand, etc.)
 networkResourceNames:
   - "nvidia.com/mlnxnics"
+  # k8s-rdma-shared-dev-plugin shared-mode resource. Common on bare-metal
+  # Mellanox/ConnectX clusters; without this the init containers don't get
+  # `/dev/infiniband/*` mounted and NCCL falls back to TCP over eth0.
+  - "rdma/hca_shared_devices_a"
   - "vpc.amazonaws.com/efa"
   # GCP multi-network resources (TCPXO)
   - "networking.gke.io.networks/gpu-nic0"
