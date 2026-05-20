@@ -36,6 +36,7 @@ Environment variables set by entrypoint/container:
     - NODE_NAME: Kubernetes node name
 """
 
+import datetime
 import logging
 import os
 import sys
@@ -119,10 +120,23 @@ def _run_benchmark_flow(cfg: Config) -> int:
     # Set NCCL defaults if not already set by the container env.
     if "NCCL_DEBUG" not in os.environ:
         os.environ["NCCL_DEBUG"] = "INFO"
+    # Ensure the PyTorch NCCL watchdog actually fires on a stalled collective.
+    # The chart still sets the legacy ``NCCL_ASYNC_ERROR_HANDLING=1`` env var,
+    # which PyTorch >=2.2 silently ignores; without the modern name a peer
+    # that fails QP setup mid-collective leaves the surviving ranks blocked
+    # in NCCL with no progress and no exit path.
+    os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
 
+    collective_timeout = datetime.timedelta(seconds=cfg.collective_timeout_seconds)
     try:
-        log.info("Initializing NCCL process group", extra={"backend": "nccl"})
-        dist.init_process_group(backend="nccl")
+        log.info(
+            "Initializing NCCL process group",
+            extra={
+                "backend": "nccl",
+                "collective_timeout_seconds": cfg.collective_timeout_seconds,
+            },
+        )
+        dist.init_process_group(backend="nccl", timeout=collective_timeout)
         rank = dist.get_rank()
         log.info(
             "NCCL process group initialized",
