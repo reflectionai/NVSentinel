@@ -151,7 +151,7 @@ func (r *FaultRemediationReconciler) Reconcile(
 	nodeQuarantined := healthEventWithStatus.HealthEventStatus.NodeQuarantined
 
 	if nodeQuarantined == string(model.UnQuarantined) || nodeQuarantined == string(model.Cancelled) {
-		return r.handleCancellationEvent(ctx, nodeName, model.Status(nodeQuarantined), r.Watcher, event.ResumeToken)
+		return r.handleCancellationEvent(ctx, nodeName, model.Status(nodeQuarantined), r.Watcher, *event, r.healthEventStore)
 	}
 
 	return r.handleRemediationEvent(ctx, &healthEventWithStatus, *event, r.Watcher, r.healthEventStore)
@@ -366,13 +366,16 @@ func (r *FaultRemediationReconciler) performRemediation(ctx context.Context,
 	return crName, nil
 }
 
-// handleCancellationEvent handles node unquarantine and cancellation events by clearing annotations
+// handleCancellationEvent handles node unquarantine and cancellation events by clearing
+// annotations and writing a completion marker so the event is excluded from cold start
+// queries on future restarts.
 func (r *FaultRemediationReconciler) handleCancellationEvent(
 	ctx context.Context,
 	nodeName string,
 	status model.Status,
 	watcherInstance datastore.ChangeStreamWatcher,
-	resumeToken []byte,
+	eventWithToken datastore.EventWithToken,
+	healthEventStore datastore.HealthEventStore,
 ) (ctrl.Result, error) {
 	ctx, span := tracing.StartSpan(ctx, "fault_remediation.cancellation_event")
 	defer span.End()
@@ -394,7 +397,14 @@ func (r *FaultRemediationReconciler) handleCancellationEvent(
 		return ctrl.Result{}, fmt.Errorf("failed to clear remediation state for node: %w", err)
 	}
 
-	if err := safeMarkProcessed(context.Background(), watcherInstance, resumeToken, nodeName); err != nil {
+	if err := r.updateNodeRemediatedStatus(ctx, healthEventStore, eventWithToken, true); err != nil {
+		slog.ErrorContext(ctx, "Failed to write completion marker for cancellation event",
+			"node", nodeName,
+			"error", err)
+		tracing.RecordError(span, err)
+	}
+
+	if err := safeMarkProcessed(context.Background(), watcherInstance, eventWithToken.ResumeToken, nodeName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -851,9 +861,12 @@ func (r *FaultRemediationReconciler) HandleColdStart(ctx context.Context) {
 					[]interface{}{string(model.StatusSucceeded), string(model.AlreadyDrained)}),
 				query.Eq("healtheventstatus.faultremediated", nil),
 			),
-			// Cancelled/unquarantined events (need cleanup)
-			query.In("healtheventstatus.nodequarantined",
-				[]interface{}{string(model.UnQuarantined), string(model.Cancelled)}),
+			// Cancelled/unquarantined events that haven't been marked complete
+			query.And(
+				query.In("healtheventstatus.nodequarantined",
+					[]interface{}{string(model.UnQuarantined), string(model.Cancelled)}),
+				query.Eq("healtheventstatus.faultremediated", nil),
+			),
 		),
 	)
 
