@@ -126,6 +126,16 @@ def _run_benchmark_flow(cfg: Config) -> int:
     # that fails QP setup mid-collective leaves the surviving ranks blocked
     # in NCCL with no progress and no exit path.
     os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
+    # Keep the heartbeat hard-abort safely above the per-collective deadline.
+    # The heartbeat watchdog kills the process via ``LOG(FATAL)`` when the
+    # NCCL watchdog thread itself stalls; if it fires before the soft timeout
+    # we lose the graceful STORE_ONLY exit (no metric, no health event). Pin
+    # the heartbeat to ~5x the collective timeout so the soft path always
+    # wins under STORE_ONLY semantics.
+    os.environ.setdefault(
+        "TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC",
+        str(max(600, cfg.collective_timeout_seconds * 5)),
+    )
 
     collective_timeout = datetime.timedelta(seconds=cfg.collective_timeout_seconds)
     try:
