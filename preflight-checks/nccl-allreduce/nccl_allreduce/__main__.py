@@ -41,6 +41,7 @@ import os
 import sys
 from importlib.metadata import PackageNotFoundError, version
 
+import structlog
 import torch.distributed as dist
 
 from .benchmark import Benchmark, BenchmarkResult, parse_size
@@ -70,6 +71,23 @@ def main() -> None:
     """
     log_level = os.getenv("LOG_LEVEL", "info")
     set_default_structured_logger("preflight-nccl-allreduce", get_version(), log_level)
+
+    # Bind runtime context (rank/pod/node from env) so every subsequent
+    # log line carries it via structlog contextvars; emit a "Worker
+    # started" event so post-hoc analyzers can identify which ranks/pods
+    # got past spawn before any failure.
+    _ctx: dict[str, int | str] = {}
+    for _k in ("RANK", "LOCAL_RANK", "WORLD_SIZE"):
+        if (_v := os.environ.get(_k)):
+            try:
+                _ctx[_k.lower()] = int(_v)
+            except ValueError:
+                pass
+    for _k in ("POD_NAME", "NODE_NAME"):
+        if (_v := os.environ.get(_k)):
+            _ctx[_k.lower()] = _v
+    structlog.contextvars.bind_contextvars(**_ctx)
+    log.info("Worker started")
 
     exit_code = run()
     sys.exit(exit_code)
