@@ -88,6 +88,7 @@ def set_default_structured_logger(module: str, version: str, level: str) -> None
         structlog.stdlib.ProcessorFormatter(
             foreign_pre_chain=[
                 structlog.stdlib.add_log_level,
+                structlog.contextvars.merge_contextvars,
                 structlog.stdlib.ExtraAdder(),
                 structlog.processors.TimeStamper(fmt="iso"),
                 inject_module_version,
