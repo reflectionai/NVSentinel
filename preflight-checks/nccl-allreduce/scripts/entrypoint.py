@@ -51,10 +51,11 @@ from dataclasses import dataclass
 # Add parent directory to path for imports when running as script
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from nvsentinel_preflight_runtime import bootstrap
+
 from nccl_allreduce.errors import NCCLError
 from nccl_allreduce.gang import GangConfig, GangWaiter
 from nccl_allreduce.health import HealthReporter
-from nccl_allreduce.logger import set_default_structured_logger
 from nccl_allreduce.protos import health_event_pb2 as pb
 
 log = logging.getLogger(__name__)
@@ -70,8 +71,7 @@ def main() -> int:
     Returns:
         Exit code.
     """
-    log_level = os.getenv("LOG_LEVEL", "info")
-    set_default_structured_logger("preflight-nccl-allreduce", "0.1.0", log_level)
+    bootstrap(module="preflight-nccl-allreduce", version="0.1.0")
 
     # 1. Load configuration from environment
     cfg = _load_config()

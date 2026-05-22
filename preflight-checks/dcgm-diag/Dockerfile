@@ -29,13 +29,20 @@ ENV POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_CREATE=1 \
     POETRY_CACHE_DIR=/tmp/poetry_cache
 
-WORKDIR /app
+# Mirror the in-repo layout so the poetry path dependency
+# `../common/nvsentinel_preflight_runtime` (from pyproject.toml) resolves
+# identically in-container and on developers' machines.
+COPY preflight-checks/common/ /build/preflight-checks/common/
+COPY preflight-checks/dcgm-diag/ /build/preflight-checks/dcgm-diag/
+WORKDIR /build/preflight-checks/dcgm-diag
 
-COPY preflight-checks/dcgm-diag/ .
 RUN poetry version $(echo "${VERSION}" | sed 's/^v//')
 RUN --mount=type=cache,target=/tmp/poetry_cache \
     poetry build --format wheel
-RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
+RUN --mount=type=cache,target=/tmp/poetry_cache \
+    poetry -C /build/preflight-checks/common/nvsentinel_preflight_runtime build --format wheel
+RUN poetry export --format requirements.txt --output constraints.txt --without-hashes && \
+    sed -i '/^-e file:\/\//d; /^nvsentinel-preflight-runtime/d' constraints.txt
 
 
 FROM nvcr.io/nvidia/cloud-native/dcgm:${DCGM_VERSION} AS runtime
@@ -56,10 +63,15 @@ ARG PYTHONPATH="/usr/share/datacenter-gpu-manager-4/bindings/python3"
 ENV PYTHONPATH=${PYTHONPATH} \
     PYTHONUNBUFFERED=1
 
-COPY --from=build /app/dist/*.whl ./
-COPY --from=build /app/constraints.txt ./
+COPY --from=build /build/preflight-checks/dcgm-diag/dist/*.whl ./
+COPY --from=build /build/preflight-checks/common/nvsentinel_preflight_runtime/dist/*.whl ./
+COPY --from=build /build/preflight-checks/dcgm-diag/constraints.txt ./
+# Install transitive deps via constraints, then the wheels with --no-deps so
+# pip doesn't try to resolve the path-dep file:// URL recorded in the check
+# wheel's METADATA (the source path is build-stage-only and absent here).
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install ./nvsentinel_dcgm_diag*.whl --constraint constraints.txt
+    pip install -r constraints.txt && \
+    pip install --no-deps ./nvsentinel_preflight_runtime*.whl ./nvsentinel_dcgm_diag*.whl
 
 # Bundle error mapping file (static release data, not runtime config)
 COPY distros/kubernetes/nvsentinel/charts/gpu-health-monitor/files/dcgmerrorsmapping.csv /etc/dcgm/dcgmerrorsmapping.csv

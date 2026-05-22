@@ -41,9 +41,12 @@ ENV POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_CREATE=1 \
     POETRY_CACHE_DIR=/tmp/poetry_cache
 
-WORKDIR /app
-
-COPY preflight-checks/nccl-allreduce/ .
+# Mirror the in-repo layout so the poetry path dependency
+# `../common/nvsentinel_preflight_runtime` (from pyproject.toml) resolves
+# identically in-container and on developers' machines.
+COPY preflight-checks/common/ /build/preflight-checks/common/
+COPY preflight-checks/nccl-allreduce/ /build/preflight-checks/nccl-allreduce/
+WORKDIR /build/preflight-checks/nccl-allreduce
 
 # Update version if it's a valid semver (skip for branch names)
 RUN if echo "${VERSION}" | grep -qE '^v?[0-9]+\.[0-9]+'; then \
@@ -51,9 +54,12 @@ RUN if echo "${VERSION}" | grep -qE '^v?[0-9]+\.[0-9]+'; then \
     fi
 RUN --mount=type=cache,target=/tmp/poetry_cache \
     poetry build --format wheel
+RUN --mount=type=cache,target=/tmp/poetry_cache \
+    poetry -C /build/preflight-checks/common/nvsentinel_preflight_runtime build --format wheel
 
 # Export requirements for installation without torch (provided by base image)
-RUN poetry export --format requirements.txt --output constraints.txt --without-hashes
+RUN poetry export --format requirements.txt --output constraints.txt --without-hashes && \
+    sed -i '/^-e file:\/\//d; /^nvsentinel-preflight-runtime/d' constraints.txt
 
 # =============================================================================
 # Runtime stage: PyTorch base image with NCCL support
@@ -76,11 +82,13 @@ ARG VERSION
 # On non-AWS platforms these files don't exist, so the rm is a no-op.
 RUN rm -rf /opt/amazon /usr/lib/x86_64-linux-gnu/libefa.so*
 
-COPY --from=build /app/dist/*.whl /tmp/
-COPY --from=build /app/constraints.txt /tmp/
+COPY --from=build /build/preflight-checks/nccl-allreduce/dist/*.whl /tmp/
+COPY --from=build /build/preflight-checks/common/nvsentinel_preflight_runtime/dist/*.whl /tmp/
+COPY --from=build /build/preflight-checks/nccl-allreduce/constraints.txt /tmp/
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install /tmp/nvsentinel_nccl_allreduce*.whl \
+    pip install /tmp/nvsentinel_preflight_runtime*.whl \
+                /tmp/nvsentinel_nccl_allreduce*.whl \
         --constraint /tmp/constraints.txt && \
     rm -rf /tmp/*.whl /tmp/constraints.txt
 

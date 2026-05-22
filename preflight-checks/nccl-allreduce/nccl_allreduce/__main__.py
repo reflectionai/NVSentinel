@@ -42,14 +42,14 @@ import sys
 from importlib.metadata import PackageNotFoundError, version
 
 import torch.distributed as dist
+from nvsentinel_preflight_runtime import bootstrap
 
+from . import otel_metrics
 from .benchmark import Benchmark, BenchmarkResult, parse_size
 from .config import Config
 from .errors import NCCLError
-from .protos import health_event_pb2 as pb
 from .health import HealthReporter
-from .logger import set_default_structured_logger
-from . import otel_metrics
+from .protos import health_event_pb2 as pb
 
 log = logging.getLogger(__name__)
 
@@ -68,8 +68,7 @@ def main() -> None:
     This is called by torchrun on each process. Only rank 0 sends
     health events and determines the final exit code.
     """
-    log_level = os.getenv("LOG_LEVEL", "info")
-    set_default_structured_logger("preflight-nccl-allreduce", get_version(), log_level)
+    bootstrap(module="preflight-nccl-allreduce", version=get_version())
 
     exit_code = run()
     sys.exit(exit_code)
@@ -214,11 +213,7 @@ def _run_benchmark(cfg: Config, rank: int) -> int:
 
     # Only rank 0 reports results and determines exit code
     if rank != 0:
-        return (
-            NCCLError.SUCCESS.value.exit_code
-            if passed
-            else NCCLError.ALLREDUCE_BW_DEGRADED.value.exit_code
-        )
+        return NCCLError.SUCCESS.value.exit_code if passed else NCCLError.ALLREDUCE_BW_DEGRADED.value.exit_code
 
     if cfg.skip_bandwidth_check and not result.passed:
         log.info(
@@ -248,8 +243,7 @@ def _handle_success(cfg: Config, result: BenchmarkResult) -> int:
         Exit code.
     """
     message = (
-        f"NCCL all-reduce bus bandwidth {result.min_bus_bw:.2f} GB/s "
-        f"meets threshold {cfg.bw_threshold_gbps:.2f} GB/s"
+        f"NCCL all-reduce bus bandwidth {result.min_bus_bw:.2f} GB/s meets threshold {cfg.bw_threshold_gbps:.2f} GB/s"
     )
 
     log.info("NCCL all-reduce check PASSED", extra={"details": message})
