@@ -39,20 +39,30 @@ Environment variables set by entrypoint/container:
 import logging
 import os
 import sys
+from datetime import timedelta
 from importlib.metadata import PackageNotFoundError, version
 
 import structlog
 import torch.distributed as dist
 
+from . import otel_metrics
 from .benchmark import Benchmark, BenchmarkResult, parse_size
 from .config import Config
 from .errors import NCCLError
-from .protos import health_event_pb2 as pb
 from .health import HealthReporter
 from .logger import set_default_structured_logger
-from . import otel_metrics
+from .protos import health_event_pb2 as pb
 
 log = logging.getLogger(__name__)
+
+# Wall-clock bound on the NCCL phase, overridable per-launch via env.
+_DEFAULT_CHECK_TIMEOUT_SECONDS = 15 * 60
+_CHECK_TIMEOUT_SECONDS = int(
+    os.getenv(
+        "REFLECTION_PREFLIGHT_TIMEOUT_SECONDS",
+        str(_DEFAULT_CHECK_TIMEOUT_SECONDS),
+    )
+)
 
 
 def get_version() -> str:
@@ -137,10 +147,21 @@ def _run_benchmark_flow(cfg: Config) -> int:
     # Set NCCL defaults if not already set by the container env.
     if "NCCL_DEBUG" not in os.environ:
         os.environ["NCCL_DEBUG"] = "INFO"
+    # Surface stuck collectives as exceptions rather than hangs.
+    os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
 
     try:
-        log.info("Initializing NCCL process group", extra={"backend": "nccl"})
-        dist.init_process_group(backend="nccl")
+        log.info(
+            "Initializing NCCL process group",
+            extra={
+                "backend": "nccl",
+                "timeout_s": _CHECK_TIMEOUT_SECONDS,
+            },
+        )
+        dist.init_process_group(
+            backend="nccl",
+            timeout=timedelta(seconds=_CHECK_TIMEOUT_SECONDS),
+        )
         rank = dist.get_rank()
         log.info(
             "NCCL process group initialized",
