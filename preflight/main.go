@@ -29,10 +29,15 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	preflightv1alpha1 "github.com/nvidia/nvsentinel/preflight/pkg/apis/preflight/v1alpha1"
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/controller"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
+	"github.com/nvidia/nvsentinel/preflight/pkg/registry"
 	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
@@ -44,9 +49,16 @@ var (
 	commit  = "none"
 	date    = "unknown"
 
+	scheme = runtime.NewScheme()
+
 	discoverer     gang.GangDiscoverer
 	onGangRegister webhook.GangRegistrationFunc
 )
+
+func init() {
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(preflightv1alpha1.AddToScheme(scheme))
+}
 
 func main() {
 	logger.SetDefaultStructuredLogger("preflight", version)
@@ -84,18 +96,25 @@ func run() error {
 	slog.Info("Configuration loaded",
 		"initContainers", len(cfg.InitContainers),
 		"gpuResourceNames", cfg.GPUResourceNames,
-		"gangCoordinationEnabled", cfg.GangCoordination.Enabled)
+		"gangCoordinationEnabled", cfg.GangCoordination.Enabled,
+		"dynamicChecksEnabled", cfg.DynamicChecks)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if cfg.GangCoordination.Enabled {
-		if err := setupGangCoordination(ctx, cfg, stop); err != nil {
+	// The registry is the injector's view of available checks: the static
+	// chart config, optionally augmented at runtime by PreflightCheck CRs.
+	reg := registry.New(cfg.InitContainers)
+
+	// A controller manager is needed for gang coordination and/or for watching
+	// PreflightCheck CRs. Start one only if either feature is enabled.
+	if cfg.GangCoordination.Enabled || cfg.DynamicChecks {
+		if err := setupManager(ctx, cfg, reg, stop); err != nil {
 			return err
 		}
 	}
 
-	handler := webhook.NewHandler(cfg, discoverer, onGangRegister)
+	handler := webhook.NewHandlerWithRegistry(cfg, discoverer, onGangRegister, reg)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", handler.HandleMutate)
@@ -104,16 +123,51 @@ func run() error {
 	return runHTTPServer(ctx, mux, certDir, port)
 }
 
-func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context.CancelFunc) error {
+// setupManager creates the controller manager and wires up whichever
+// controllers are enabled: the gang controller (gang coordination) and/or the
+// PreflightCheck controller (dynamic check registration). The manager is
+// started in the background; if it fails, the process is asked to shut down.
+func setupManager(ctx context.Context, cfg *config.Config, reg *registry.Registry, stop context.CancelFunc) error {
 	restConfig, err := rest.InClusterConfig()
 	if err != nil {
 		return fmt.Errorf("failed to get in-cluster config: %w", err)
 	}
 
-	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{})
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{Scheme: scheme})
 	if err != nil {
 		return fmt.Errorf("failed to create controller manager: %w", err)
 	}
+
+	if cfg.GangCoordination.Enabled {
+		if err := setupGangController(cfg, mgr); err != nil {
+			return err
+		}
+	}
+
+	if cfg.DynamicChecks {
+		pfcController := controller.NewPreflightCheckController(mgr.GetClient(), reg)
+		if err := pfcController.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("failed to setup PreflightCheck controller: %w", err)
+		}
+
+		slog.Info("Dynamic preflight-check registration enabled (watching PreflightCheck CRs)")
+	}
+
+	go func() {
+		if err := mgr.Start(ctx); err != nil {
+			slog.Error("Controller manager failed, initiating shutdown", "error", err)
+			stop()
+		}
+	}()
+
+	return nil
+}
+
+// setupGangController builds the gang discoverer, coordinator, and controller,
+// and registers the controller with the manager. It also publishes the
+// discoverer and gang-registration hook used by the admission handler.
+func setupGangController(cfg *config.Config, mgr ctrl.Manager) error {
+	var err error
 
 	discoverer, err = gang.NewDiscovererFromConfig(
 		cfg.GangDiscovery,
@@ -142,13 +196,6 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 	}
 
 	onGangRegister = gangController.RegisterPod
-
-	go func() {
-		if err := mgr.Start(ctx); err != nil {
-			slog.Error("Controller manager failed, initiating shutdown", "error", err)
-			stop()
-		}
-	}()
 
 	discovererName := "kubernetes"
 	if cfg.GangDiscovery.Name != "" {

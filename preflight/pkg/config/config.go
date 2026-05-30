@@ -69,6 +69,12 @@ type FileConfig struct {
 	GangDiscovery    GangDiscoveryConfig    `yaml:"gangDiscovery"`
 	GangCoordination GangCoordinationConfig `yaml:"gangCoordination"`
 
+	// DynamicChecks enables watching PreflightCheck custom resources and
+	// registering them as available checks at runtime, without redeploying
+	// NVSentinel (see ADR-041). Requires the PreflightCheck CRD to be
+	// installed. Default: false.
+	DynamicChecks bool `yaml:"dynamicChecks,omitempty"`
+
 	// InitContainerPlacement controls where preflight init containers are
 	// placed relative to existing init containers in the pod spec.
 	// Valid values: "prepend", "append". Default: "append".

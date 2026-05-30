@@ -1,0 +1,27 @@
+# Sample PreflightCheck (ADR-041). Apply this to register a check at runtime
+# without redeploying NVSentinel:
+#
+#   kubectl apply -f preflight_v1alpha1_preflightcheck.yaml
+#
+# The preflight controller (with dynamicChecks enabled) watches PreflightCheck
+# resources and makes them available to the injector. Because defaultEnabled is
+# false, a pod opts in via the per-pod annotation (ADR-034):
+#
+#   metadata:
+#     annotations:
+#       nvsentinel.nvidia.com/preflight-checks: "bandwidth-check"
+apiVersion: preflight.nvsentinel.nvidia.com/v1alpha1
+kind: PreflightCheck
+metadata:
+  name: bandwidth-check
+spec:
+  # Opt-in until trusted: only runs when a pod selects it by annotation.
+  defaultEnabled: false
+  gangAware: false
+  container:
+    # If container.name is omitted, the object name ("bandwidth-check") is used
+    # as the check name that the per-pod annotation matches.
+    image: myregistry/bandwidth-check:v1
+    env:
+      - name: THRESHOLD_GBPS
+        value: "10"
