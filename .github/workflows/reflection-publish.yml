@@ -83,7 +83,8 @@ jobs:
           VERSION: ${{ needs.compute-tag.outputs.tag }}
           GIT_COMMIT: ${{ github.sha }}
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
-          PLATFORMS: linux/amd64
+          # Multi-arch: arm64 is required for all-Grace clusters (e.g. GB300).
+          PLATFORMS: linux/amd64,linux/arm64
         run: |
           # Ensure go.work exists for multi-module repo
           if [ ! -f go.work ]; then
@@ -183,7 +184,8 @@ jobs:
           CONTAINER_REGISTRY: ${{ env.GCP_REGISTRY }}
           CONTAINER_ORG: ${{ env.GCP_PROJECT }}
           CI_COMMIT_REF_NAME: ${{ needs.compute-tag.outputs.tag }}
-          PLATFORMS: linux/amd64
+          # Multi-arch: arm64 is required for all-Grace clusters (e.g. GB300).
+          PLATFORMS: linux/amd64,linux/arm64
           DISABLE_REGISTRY_CACHE: "true"
         run: ${{ matrix.make_command }}
 
