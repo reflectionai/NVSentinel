@@ -269,7 +269,6 @@ func (c *Coordinator) RegisterPeerInConfigMap(
 	return nil
 }
 
-
 // updateConfigMap updates an existing ConfigMap, retrying on conflict.
 func (c *Coordinator) updateConfigMap(
 	ctx context.Context,
@@ -285,10 +284,18 @@ func (c *Coordinator) updateConfigMap(
 			return fmt.Errorf("failed to get ConfigMap %s: %w", configMapName, err)
 		}
 
-		// Update expected_count if it was 0 (skeleton) and we now have the real value
+		// Track the expected gang size as a monotonic maximum. The PodGroup
+		// discoverer derives expectedCount from a live, still-ramping pod count
+		// (filtered peers in Running/Pending), so the first registration after the
+		// skeleton ConfigMap is created can observe a count below the gang's true
+		// size. Latching that first value (the previous `currentCount == 0` guard)
+		// froze a transient undercount: init containers then sealed the gang below
+		// the job's node count and derived an invalid WORLD_SIZE (e.g. 252 of 256).
+		// Taking the max lets the count converge upward as the remaining pods reach
+		// Running/Pending, and never shrinks when a later snapshot races low.
 		if expectedCount > 0 {
 			currentCount, _ := strconv.Atoi(cm.Data[DataKeyExpectedCount])
-			if currentCount == 0 {
+			if expectedCount > currentCount {
 				cm.Data[DataKeyExpectedCount] = strconv.Itoa(expectedCount)
 			}
 		}

@@ -510,7 +510,7 @@ func TestRegisterPeer(t *testing.T) {
 		assert.Equal(t, "4", cm.Data[DataKeyExpectedCount])
 	})
 
-	t.Run("expected count not overwritten when already set", func(t *testing.T) {
+	t.Run("expected count not shrunk by a lower later count", func(t *testing.T) {
 		coord := newFakeCoordinator()
 		ctx := context.Background()
 
@@ -519,7 +519,26 @@ func TestRegisterPeer(t *testing.T) {
 		require.NoError(t, coord.RegisterPeer(ctx, "default", gangInfo, types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"}))
 
 		cm := getConfigMap(t, coord.client, "default", ConfigMapName("preset-gang"))
-		assert.Equal(t, "4", cm.Data[DataKeyExpectedCount], "should not be overwritten")
+		assert.Equal(t, "4", cm.Data[DataKeyExpectedCount], "monotonic max: a lower racing snapshot must not shrink it")
+	})
+
+	t.Run("expected count grows to a higher later count", func(t *testing.T) {
+		// A still-ramping gang: the first registration observes a partial filtered
+		// peer count, later ones observe the full size. expected_count must
+		// converge up to the true size rather than latching the first snapshot.
+		coord := newFakeCoordinator()
+		ctx := context.Background()
+
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "ramping-gang", 0))
+		undercount := &types.GangInfo{GangID: "ramping-gang", ExpectedMinCount: 252}
+		require.NoError(t, coord.RegisterPeer(ctx, "default", undercount, types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"}))
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("ramping-gang"))
+		assert.Equal(t, "252", cm.Data[DataKeyExpectedCount])
+
+		full := &types.GangInfo{GangID: "ramping-gang", ExpectedMinCount: 256}
+		require.NoError(t, coord.RegisterPeer(ctx, "default", full, types.PeerInfo{PodName: "pod-1", PodIP: "10.0.0.2"}))
+		cm = getConfigMap(t, coord.client, "default", ConfigMapName("ramping-gang"))
+		assert.Equal(t, "256", cm.Data[DataKeyExpectedCount], "monotonic max: must converge up to the true gang size")
 	})
 }
 
