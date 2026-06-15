@@ -540,6 +540,37 @@ func TestRegisterPeer(t *testing.T) {
 		cm = getConfigMap(t, coord.client, "default", ConfigMapName("ramping-gang"))
 		assert.Equal(t, "256", cm.Data[DataKeyExpectedCount], "monotonic max: must converge up to the true gang size")
 	})
+
+	t.Run("a transient over-count latches and is not self-corrected", func(t *testing.T) {
+		// The flip side of the monotonic-max rule, pinned deliberately. The
+		// discoverer derives ExpectedMinCount from a live filtered pod count, so
+		// it can momentarily observe MORE pods than the gang's true size — e.g.
+		// a worker pod mid-reschedule whose old (Terminating) and new
+		// (Pending) replicas both pass the peer filter for an instant. Because
+		// the rule only ever grows the count, that transient over-count latches
+		// and is NOT corrected when later snapshots report the true (lower)
+		// size. The init containers then wait for a peer that never arrives; the
+		// gang-formation timeout is the backstop (which is non-blocking under
+		// OBSERVE). This is the known tradeoff of "never shrink" — a future
+		// change that lets the count shrink to self-correct would also reopen
+		// the racing-low undercount this rule exists to prevent, so it must be
+		// a deliberate decision. See the convergence cases above for the win
+		// side of the same rule.
+		coord := newFakeCoordinator()
+		ctx := context.Background()
+
+		require.NoError(t, coord.EnsureConfigMap(ctx, "default", "overcount-gang", 0))
+
+		overcount := &types.GangInfo{GangID: "overcount-gang", ExpectedMinCount: 260}
+		require.NoError(t, coord.RegisterPeer(ctx, "default", overcount, types.PeerInfo{PodName: "pod-0", PodIP: "10.0.0.1"}))
+		cm := getConfigMap(t, coord.client, "default", ConfigMapName("overcount-gang"))
+		assert.Equal(t, "260", cm.Data[DataKeyExpectedCount])
+
+		settled := &types.GangInfo{GangID: "overcount-gang", ExpectedMinCount: 256}
+		require.NoError(t, coord.RegisterPeer(ctx, "default", settled, types.PeerInfo{PodName: "pod-1", PodIP: "10.0.0.2"}))
+		cm = getConfigMap(t, coord.client, "default", ConfigMapName("overcount-gang"))
+		assert.Equal(t, "260", cm.Data[DataKeyExpectedCount], "monotonic max cannot self-correct a transient over-count")
+	})
 }
 
 // TestUpdateMasterAddr covers master address selection: rank-0 is
