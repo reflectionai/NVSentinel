@@ -542,20 +542,10 @@ func TestRegisterPeer(t *testing.T) {
 	})
 
 	t.Run("a transient over-count latches and is not self-corrected", func(t *testing.T) {
-		// The flip side of the monotonic-max rule, pinned deliberately. The
-		// discoverer derives ExpectedMinCount from a live filtered pod count, so
-		// it can momentarily observe MORE pods than the gang's true size — e.g.
-		// a worker pod mid-reschedule whose old (Terminating) and new
-		// (Pending) replicas both pass the peer filter for an instant. Because
-		// the rule only ever grows the count, that transient over-count latches
-		// and is NOT corrected when later snapshots report the true (lower)
-		// size. The init containers then wait for a peer that never arrives; the
-		// gang-formation timeout is the backstop (which is non-blocking under
-		// OBSERVE). This is the known tradeoff of "never shrink" — a future
-		// change that lets the count shrink to self-correct would also reopen
-		// the racing-low undercount this rule exists to prevent, so it must be
-		// a deliberate decision. See the convergence cases above for the win
-		// side of the same rule.
+		// The coordinator cannot distinguish an incorrect high snapshot from a
+		// real gang expansion, so monotonic max preserves any over-count that
+		// reaches it. Discovery must keep known false peers, such as Terminating
+		// pods, out of that snapshot.
 		coord := newFakeCoordinator()
 		ctx := context.Background()
 

@@ -171,20 +171,7 @@ func (d *PodGroupDiscoverer) DiscoverPeers(ctx context.Context, pod *corev1.Pod)
 
 	for i := range podList.Items {
 		p := &podList.Items[i]
-
-		// Check if this pod belongs to the same gang
-		if d.getPodGroupName(p) != podGroupName {
-			continue
-		}
-
-		// Skip pods that are not running or pending
-		if p.Status.Phase != corev1.PodRunning && p.Status.Phase != corev1.PodPending {
-			continue
-		}
-
-		// Skip pods that don't pass the peer filter (e.g., pods without
-		// init containers in a mixed JobSet like Ray head + GPU workers).
-		if d.config.PeerFilter != nil && !d.config.PeerFilter(p) {
+		if !d.isPeerMatch(p, podGroupName) {
 			continue
 		}
 
@@ -226,6 +213,18 @@ func (d *PodGroupDiscoverer) DiscoverPeers(ctx context.Context, pod *corev1.Pod)
 		ExpectedMinCount: expectedCount,
 		Peers:            peers,
 	}, nil
+}
+
+func (d *PodGroupDiscoverer) isPeerMatch(p *corev1.Pod, podGroupName string) bool {
+	if d.getPodGroupName(p) != podGroupName || p.DeletionTimestamp != nil {
+		return false
+	}
+
+	if p.Status.Phase != corev1.PodRunning && p.Status.Phase != corev1.PodPending {
+		return false
+	}
+
+	return d.config.PeerFilter == nil || d.config.PeerFilter(p)
 }
 
 // getPodGroupMinMember retrieves the minMember field from a PodGroup CRD using CEL.

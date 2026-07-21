@@ -172,6 +172,41 @@ func TestWorkloadRefDiscoverer_DiscoverPeers(t *testing.T) {
 		assert.Nil(t, info)
 	})
 
+	t.Run("excludes terminating pods from an overlapping generation", func(t *testing.T) {
+		workload := makeWorkloadCRD("default", "train", []map[string]any{
+			{"name": "workers", "policy": map[string]any{"gang": map[string]any{"minCount": int64(4)}}},
+		})
+		oldWorker0 := makeWorkloadPod("old-worker-0", "default", "train", "workers", "10.0.0.1", corev1.PodRunning)
+		oldWorker1 := makeWorkloadPod("old-worker-1", "default", "train", "workers", "10.0.0.2", corev1.PodRunning)
+		newWorker0 := makeWorkloadPod("new-worker-0", "default", "train", "workers", "10.0.0.3", corev1.PodRunning)
+		newWorker1 := makeWorkloadPod("new-worker-1", "default", "train", "workers", "10.0.0.4", corev1.PodPending)
+		for _, pod := range []*corev1.Pod{oldWorker0, oldWorker1, newWorker0, newWorker1} {
+			pod.Spec.Volumes = []corev1.Volume{{Name: "nvsentinel-preflight-gang-config"}}
+		}
+		deletionTime := metav1.Now()
+		oldWorker0.Finalizers = []string{"test.example/finalizer"}
+		oldWorker1.Finalizers = []string{"test.example/finalizer"}
+		oldWorker0.DeletionTimestamp = &deletionTime
+		oldWorker1.DeletionTimestamp = &deletionTime
+
+		pods := []runtime.Object{oldWorker0, oldWorker1, newWorker0, newWorker1}
+		c := fake.NewClientBuilder().WithRuntimeObjects(append(pods, workload)...).Build()
+		d := NewWorkloadRefDiscoverer(c, WithPeerFilter(func(pod *corev1.Pod) bool {
+			for _, volume := range pod.Spec.Volumes {
+				if volume.Name == "nvsentinel-preflight-gang-config" {
+					return true
+				}
+			}
+			return false
+		}))
+
+		info, err := d.DiscoverPeers(context.Background(), newWorker0)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Len(t, info.Peers, 2)
+		assert.Equal(t, 2, info.ExpectedMinCount)
+	})
+
 	t.Run("workload not found falls back to discovered count", func(t *testing.T) {
 		pods := []runtime.Object{
 			makeWorkloadPod("w-0", "default", "missing", "workers", "10.0.0.1", corev1.PodRunning),

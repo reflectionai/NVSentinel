@@ -210,6 +210,10 @@ func (w *WorkloadRefDiscoverer) isPeerMatch(p *corev1.Pod, workloadName, podGrou
 		return false
 	}
 
+	if p.DeletionTimestamp != nil {
+		return false
+	}
+
 	if p.Status.Phase != corev1.PodRunning && p.Status.Phase != corev1.PodPending {
 		return false
 	}
