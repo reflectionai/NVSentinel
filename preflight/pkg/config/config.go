@@ -20,6 +20,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/yaml"
 )
 
@@ -90,6 +91,17 @@ type FileConfig struct {
 	// This allows the init container to inherit fabric-specific mounts
 	// (e.g. host EFA libs, TCPXO plugin volumes) from the user's container.
 	VolumeMountPatterns []string `yaml:"volumeMountPatterns,omitempty"`
+
+	// ExtraEmptyDirVolumes are pod-scoped volumes created whenever preflight
+	// init containers are injected. Init container specs can mount them by name.
+	ExtraEmptyDirVolumes []ExtraEmptyDirVolume `yaml:"extraEmptyDirVolumes,omitempty"`
+}
+
+// ExtraEmptyDirVolume defines an emptyDir volume injected into target pods.
+type ExtraEmptyDirVolume struct {
+	Name      string               `yaml:"name"`
+	Medium    corev1.StorageMedium `yaml:"medium,omitempty"`
+	SizeLimit *resource.Quantity   `yaml:"sizeLimit,omitempty"`
 }
 
 // GangDiscoveryConfig configures gang discovery for PodGroup-based schedulers.
@@ -300,6 +312,10 @@ func (c *FileConfig) validate() error {
 		seen[spec.Name] = struct{}{}
 	}
 
+	if err := c.validateExtraEmptyDirVolumes(); err != nil {
+		return err
+	}
+
 	switch c.InitContainerPlacement {
 	case PlacementPrepend, PlacementAppend:
 	default:
@@ -314,6 +330,27 @@ func (c *FileConfig) validate() error {
 		}
 
 		c.GangCoordination.TimeoutDuration = timeout
+	}
+
+	return nil
+}
+
+func (c *FileConfig) validateExtraEmptyDirVolumes() error {
+	volumeNames := make(map[string]struct{}, len(c.ExtraEmptyDirVolumes))
+	for i, volume := range c.ExtraEmptyDirVolumes {
+		if volume.Name == "" {
+			return fmt.Errorf("extraEmptyDirVolumes[%d].name must be set", i)
+		}
+
+		if _, exists := volumeNames[volume.Name]; exists {
+			return fmt.Errorf("duplicate extra emptyDir volume name %q", volume.Name)
+		}
+
+		if volume.SizeLimit != nil && volume.SizeLimit.Sign() < 0 {
+			return fmt.Errorf("extraEmptyDirVolumes[%d].sizeLimit must not be negative", i)
+		}
+
+		volumeNames[volume.Name] = struct{}{}
 	}
 
 	return nil

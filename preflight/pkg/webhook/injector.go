@@ -506,7 +506,7 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 		// This is the same hostPath used by gpu-health-monitor.
 		hostPathType := corev1.HostPathDirectoryOrCreate
 
-		volumesToAdd = append(volumesToAdd, corev1.Volume{
+		volumesToAdd = appendVolumesIfAbsent(volumesToAdd, existingVolumes, corev1.Volume{
 			Name: nvsentinelSocketVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				HostPath: &corev1.HostPathVolumeSource{
@@ -518,8 +518,18 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 	}
 
 	if gangCtx != nil {
-		volumesToAdd = append(volumesToAdd, i.collectGangVolumes(gangCtx, existingVolumes)...)
+		volumesToAdd = appendVolumesIfAbsent(
+			volumesToAdd,
+			existingVolumes,
+			i.collectGangVolumes(gangCtx, existingVolumes)...,
+		)
 	}
+
+	volumesToAdd = appendVolumesIfAbsent(
+		volumesToAdd,
+		existingVolumes,
+		i.extraEmptyDirVolumes()...,
+	)
 
 	if len(volumesToAdd) == 0 {
 		return patches
@@ -542,6 +552,40 @@ func (i *Injector) injectVolumes(pod *corev1.Pod, gangCtx *GangContext) []PatchO
 	}
 
 	return patches
+}
+
+func appendVolumesIfAbsent(
+	volumes []corev1.Volume,
+	existing map[string]bool,
+	candidates ...corev1.Volume,
+) []corev1.Volume {
+	for _, volume := range candidates {
+		if volume.Name == "" || existing[volume.Name] {
+			continue
+		}
+
+		volumes = append(volumes, volume)
+		existing[volume.Name] = true
+	}
+
+	return volumes
+}
+
+func (i *Injector) extraEmptyDirVolumes() []corev1.Volume {
+	volumes := make([]corev1.Volume, 0, len(i.cfg.ExtraEmptyDirVolumes))
+	for _, volume := range i.cfg.ExtraEmptyDirVolumes {
+		volumes = append(volumes, corev1.Volume{
+			Name: volume.Name,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{
+					Medium:    volume.Medium,
+					SizeLimit: volume.SizeLimit,
+				},
+			},
+		})
+	}
+
+	return volumes
 }
 
 // injectImagePullSecrets builds JSON Patch operations to add configured

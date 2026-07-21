@@ -33,6 +33,10 @@ data:
     volumeMountPatterns:
       {{- toYaml .Values.volumeMountPatterns | nindent 6 }}
     {{- end }}
+    {{- if .Values.extraEmptyDirVolumes }}
+    extraEmptyDirVolumes:
+      {{- toYaml .Values.extraEmptyDirVolumes | nindent 6 }}
+    {{- end }}
     connectorSocket: {{ include "preflight.connectorSocket" . | quote }}
     processingStrategy: {{ include "preflight.processingStrategy" . | quote }}
     gangDiscovery:

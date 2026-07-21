@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 func writeYAML(t *testing.T, content string) string {
@@ -49,6 +51,31 @@ initContainers:
 		assert.Equal(t, "EXECUTE_REMEDIATION", cfg.ProcessingStrategy)
 		assert.Len(t, cfg.InitContainers, 1)
 		assert.Equal(t, "preflight-dcgm-diag", cfg.InitContainers[0].Name)
+	})
+
+	t.Run("extra emptyDir volume", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-nccl-allreduce
+    image: nccl:latest
+    volumeMounts:
+      - name: retry-state
+        mountPath: /var/run/preflight-retries
+extraEmptyDirVolumes:
+  - name: retry-state
+    medium: Memory
+    sizeLimit: 1Mi
+`)
+		cfg, err := Load(path)
+		require.NoError(t, err)
+		require.Len(t, cfg.ExtraEmptyDirVolumes, 1)
+
+		volume := cfg.ExtraEmptyDirVolumes[0]
+		assert.Equal(t, "retry-state", volume.Name)
+		assert.Equal(t, corev1.StorageMediumMemory, volume.Medium)
+		require.NotNil(t, volume.SizeLimit)
+		assert.Equal(t, resource.MustParse("1Mi"), *volume.SizeLimit)
+		assert.Equal(t, "retry-state", cfg.InitContainers[0].VolumeMounts[0].Name)
 	})
 
 	t.Run("gang enabled defaults", func(t *testing.T) {
@@ -196,6 +223,21 @@ initContainers:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "duplicate")
 		assert.Contains(t, err.Error(), "preflight-dcgm-diag")
+	})
+
+	t.Run("duplicate extra emptyDir volume names rejected", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-dcgm-diag
+    image: dcgm:latest
+extraEmptyDirVolumes:
+  - name: retry-state
+  - name: retry-state
+`)
+		_, err := Load(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate")
+		assert.Contains(t, err.Error(), "retry-state")
 	})
 
 	t.Run("defaultEnabled parsed from YAML", func(t *testing.T) {
