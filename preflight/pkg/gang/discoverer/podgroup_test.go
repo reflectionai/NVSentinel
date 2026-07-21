@@ -219,6 +219,43 @@ func TestPodGroupDiscoverer_DiscoverPeers(t *testing.T) {
 		assert.Len(t, info.Peers, 2, "only Running and Pending should be included")
 	})
 
+	t.Run("excludes terminating pods from an overlapping generation", func(t *testing.T) {
+		pg := makePodGroupCRD("default", "overlap-pg", 4)
+		oldWorker0 := makePodInGroup("old-worker-0", "default", "overlap-pg", "10.0.0.1", corev1.PodRunning)
+		oldWorker1 := makePodInGroup("old-worker-1", "default", "overlap-pg", "10.0.0.2", corev1.PodRunning)
+		newWorker0 := makePodInGroup("new-worker-0", "default", "overlap-pg", "10.0.0.3", corev1.PodRunning)
+		newWorker1 := makePodInGroup("new-worker-1", "default", "overlap-pg", "10.0.0.4", corev1.PodPending)
+		for _, pod := range []*corev1.Pod{oldWorker0, oldWorker1, newWorker0, newWorker1} {
+			pod.Spec.Volumes = []corev1.Volume{{Name: "nvsentinel-preflight-gang-config"}}
+		}
+		deletionTime := metav1.Now()
+		oldWorker0.Finalizers = []string{"test.example/finalizer"}
+		oldWorker1.Finalizers = []string{"test.example/finalizer"}
+		oldWorker0.DeletionTimestamp = &deletionTime
+		oldWorker1.DeletionTimestamp = &deletionTime
+
+		pods := []runtime.Object{oldWorker0, oldWorker1, newWorker0, newWorker1}
+		c := fake.NewClientBuilder().WithRuntimeObjects(append(pods, pg)...).Build()
+		cfg := testConfig()
+		cfg.PodGroupGVK = pgGVK
+		cfg.PeerFilter = func(pod *corev1.Pod) bool {
+			for _, volume := range pod.Spec.Volumes {
+				if volume.Name == "nvsentinel-preflight-gang-config" {
+					return true
+				}
+			}
+			return false
+		}
+		d, err := NewPodGroupDiscoverer(c, cfg)
+		require.NoError(t, err)
+
+		info, err := d.DiscoverPeers(context.Background(), newWorker0)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Len(t, info.Peers, 2)
+		assert.Equal(t, 2, info.ExpectedMinCount)
+	})
+
 	t.Run("extracts minCount via CEL", func(t *testing.T) {
 		pg := makePodGroupCRD("default", "cel-pg", 8)
 		pods := []runtime.Object{
