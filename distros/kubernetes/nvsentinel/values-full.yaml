@@ -1742,7 +1742,7 @@ preflight:
     # Maximum time to wait for all gang members to register
     timeout: "10m"
     # Port for PyTorch distributed TCP bootstrap (torchrun)
-    masterPort: 29500
+    masterPort: 29400
     # Path where gang ConfigMap is mounted in init containers
     configMapMountPath: "/etc/preflight"
     # NCCL topology ConfigMap name - required for Azure InfiniBand (NDv4/v5)

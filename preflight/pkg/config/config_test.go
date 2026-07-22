@@ -64,7 +64,7 @@ gangCoordination:
 
 		assert.True(t, cfg.GangCoordination.Enabled)
 		assert.Equal(t, 10*time.Minute, cfg.GangCoordination.TimeoutDuration)
-		assert.Equal(t, 29500, cfg.GangCoordination.MasterPort)
+		assert.Equal(t, 29400, cfg.GangCoordination.MasterPort)
 		assert.Equal(t, "/etc/preflight", cfg.GangCoordination.ConfigMapMountPath)
 		require.NotNil(t, cfg.GangCoordination.MirrorResourceClaims)
 		assert.True(t, *cfg.GangCoordination.MirrorResourceClaims)
@@ -196,6 +196,51 @@ initContainers:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "duplicate")
 		assert.Contains(t, err.Error(), "preflight-dcgm-diag")
+	})
+
+	t.Run("init container MASTER_PORT colliding with gang port rejected", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-nccl-loopback
+    image: nccl:latest
+    env:
+      - name: MASTER_PORT
+        value: "29400"
+gangCoordination:
+  enabled: true
+`)
+		_, err := Load(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "MASTER_PORT")
+		assert.Contains(t, err.Error(), "preflight-nccl-loopback")
+	})
+
+	t.Run("init container MASTER_PORT distinct from gang port accepted", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-nccl-loopback
+    image: nccl:latest
+    env:
+      - name: MASTER_PORT
+        value: "29500"
+gangCoordination:
+  enabled: true
+`)
+		_, err := Load(path)
+		require.NoError(t, err)
+	})
+
+	t.Run("MASTER_PORT collision ignored when gang coordination disabled", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-nccl-loopback
+    image: nccl:latest
+    env:
+      - name: MASTER_PORT
+        value: "29400"
+`)
+		_, err := Load(path)
+		require.NoError(t, err)
 	})
 
 	t.Run("defaultEnabled parsed from YAML", func(t *testing.T) {

@@ -69,14 +69,19 @@ const (
 	// This stores the unsanitized gang ID since labels have a 63-char limit.
 	DataKeyGangID = "gang_id"
 
-	// DefaultMasterPort is the default port for PyTorch distributed TCP bootstrap.
-	DefaultMasterPort = 29500
+	// DefaultMasterPort is the default port for PyTorch distributed TCP
+	// bootstrap of gang checks. Deliberately not 29500: single-node checks
+	// (loopback) conventionally bind their own rendezvous there, and a gang
+	// master pod still running its loopback would have its bootstrap root
+	// poisoned by gang peers connecting to the shared port. Must stay in
+	// sync with the config package default.
+	DefaultMasterPort = 29400
 )
 
 // CoordinatorConfig contains configuration for the gang coordinator.
 type CoordinatorConfig struct {
 	// MasterPort is the port used for PyTorch distributed TCP bootstrap.
-	// Default: 29500
+	// Default: 29400 (see DefaultMasterPort).
 	MasterPort int
 }
 

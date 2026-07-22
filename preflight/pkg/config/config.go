@@ -17,6 +17,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -134,8 +135,15 @@ type GangCoordinationConfig struct {
 	// TimeoutDuration is the parsed Timeout value. Set by Load().
 	TimeoutDuration time.Duration `yaml:"-"`
 
-	// MasterPort is the port used for PyTorch distributed TCP bootstrap.
-	// Default: 29500
+	// MasterPort is the port used for PyTorch distributed TCP bootstrap
+	// of gang (multi-node) checks. It must differ from any port a
+	// single-node check's own rendezvous binds (conventionally 29500 for
+	// the loopback check): the gang master's pod IP receives bootstrap
+	// connections from every gang peer, and if the master pod is still
+	// running a single-node check listening on the same port, those
+	// connections poison its bootstrap root ("mismatch in info from
+	// procs, nranks 8 vs N") and wedge the whole gang.
+	// Default: 29400
 	MasterPort int `yaml:"masterPort,omitempty"`
 
 	// ConfigMapMountPath is the path where gang ConfigMap is mounted in init containers.
@@ -256,7 +264,7 @@ func (c *GangCoordinationConfig) setDefaults() {
 	}
 
 	if c.MasterPort == 0 {
-		c.MasterPort = 29500
+		c.MasterPort = defaultGangMasterPort
 	}
 
 	if c.ConfigMapMountPath == "" {
@@ -286,11 +294,35 @@ func (c *GangCoordinationConfig) setDefaults() {
 	}
 }
 
+// defaultGangMasterPort is the default gang bootstrap port. Kept off 29500,
+// which single-node checks conventionally use for their own rendezvous (see
+// GangCoordinationConfig.MasterPort). Must stay in sync with
+// coordinator.DefaultMasterPort.
+const defaultGangMasterPort = 29400
+
 func (c *FileConfig) validate() error {
+	gangPort := 0
+	if c.GangCoordination.Enabled {
+		gangPort = c.GangCoordination.MasterPort
+		if gangPort == 0 {
+			gangPort = defaultGangMasterPort
+		}
+	}
+
 	seen := make(map[string]struct{}, len(c.InitContainers))
 	for i, spec := range c.InitContainers {
 		if spec.Name == "" {
 			return fmt.Errorf("initContainers[%d].name must be set", i)
+		}
+
+		for _, env := range spec.Env {
+			if gangPort != 0 && env.Name == "MASTER_PORT" && env.Value == strconv.Itoa(gangPort) {
+				return fmt.Errorf(
+					"initContainers[%d] (%q) sets MASTER_PORT=%s equal to gangCoordination.masterPort:"+
+						" gang bootstrap traffic to the master pod would poison this container's own"+
+						" rendezvous; use distinct ports",
+					i, spec.Name, env.Value)
+			}
 		}
 
 		if _, exists := seen[spec.Name]; exists {
