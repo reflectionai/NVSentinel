@@ -112,6 +112,16 @@ type GangDiscoveryConfig struct {
 	// Examples: "podGroup.spec.minMember", "podGroup.spec.minReplicas"
 	// Default: "podGroup.spec.minMember"
 	MinCountExpr string `yaml:"minCountExpr,omitempty"`
+
+	// MinCountFromJobParallelism selects an alternative gang-size source:
+	// the owning Job's spec.parallelism (via the pod's
+	// batch.kubernetes.io/job-name label) instead of a PodGroup CR. For
+	// clusters whose scheduler creates no PodGroups (e.g. JobSet workloads
+	// under a scheduler without a podgrouper). Gang naming still follows
+	// AnnotationKeys/LabelKeys. When false (default) the PodGroup path is
+	// used unchanged. Requires RBAC to get Jobs; covers one Job per gang
+	// (a JobSet spreading gang peers across several Jobs would undercount).
+	MinCountFromJobParallelism bool `yaml:"minCountFromJobParallelism,omitempty"`
 }
 
 // GVRConfig specifies a Kubernetes GroupVersionResource.

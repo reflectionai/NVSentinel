@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -378,5 +379,82 @@ func TestPodGroupDiscoverer_DiscoverPeers(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, info)
 		assert.Equal(t, 5, info.ExpectedMinCount, "without filter, minMember from CRD should be used")
+	})
+}
+
+func withJobLabel(pod *corev1.Pod, jobName string) *corev1.Pod {
+	if pod.Labels == nil {
+		pod.Labels = map[string]string{}
+	}
+
+	pod.Labels[batchJobNameLabel] = jobName
+
+	return pod
+}
+
+func makeJob(namespace, name string, parallelism *int32) *batchv1.Job {
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec:       batchv1.JobSpec{Parallelism: parallelism},
+	}
+}
+
+func TestPodGroupDiscoverer_MinCountFromJobParallelism(t *testing.T) {
+	parallelism := int32(2)
+
+	t.Run("sizes gang from owning Job with no PodGroup CR", func(t *testing.T) {
+		job := makeJob("default", "my-job", &parallelism)
+		pods := []runtime.Object{
+			withJobLabel(makePodInGroup("pod-0", "default", "my-pg", "10.0.0.1", corev1.PodRunning), "my-job"),
+			withJobLabel(makePodInGroup("pod-1", "default", "my-pg", "10.0.0.2", corev1.PodPending), "my-job"),
+		}
+
+		c := fake.NewClientBuilder().WithRuntimeObjects(append(pods, job)...).Build()
+		cfg := testConfig()
+		cfg.MinCountFromJobParallelism = true
+		d, err := NewPodGroupDiscoverer(c, cfg)
+		require.NoError(t, err)
+
+		requestPod := withJobLabel(
+			makePodInGroup("pod-0", "default", "my-pg", "10.0.0.1", corev1.PodRunning), "my-job")
+		info, err := d.DiscoverPeers(context.Background(), requestPod)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, 2, info.ExpectedMinCount)
+		assert.Len(t, info.Peers, 2)
+	})
+
+	t.Run("errors when the pod has no owning-Job label", func(t *testing.T) {
+		pods := []runtime.Object{
+			makePodInGroup("pod-0", "default", "my-pg", "10.0.0.1", corev1.PodRunning),
+		}
+
+		c := fake.NewClientBuilder().WithRuntimeObjects(pods...).Build()
+		cfg := testConfig()
+		cfg.MinCountFromJobParallelism = true
+		d, err := NewPodGroupDiscoverer(c, cfg)
+		require.NoError(t, err)
+
+		requestPod := makePodInGroup("pod-0", "default", "my-pg", "10.0.0.1", corev1.PodRunning)
+		_, err = d.DiscoverPeers(context.Background(), requestPod)
+		require.ErrorContains(t, err, batchJobNameLabel)
+	})
+
+	t.Run("errors when the Job has no positive parallelism", func(t *testing.T) {
+		job := makeJob("default", "my-job", nil)
+		pods := []runtime.Object{
+			withJobLabel(makePodInGroup("pod-0", "default", "my-pg", "10.0.0.1", corev1.PodRunning), "my-job"),
+		}
+
+		c := fake.NewClientBuilder().WithRuntimeObjects(append(pods, job)...).Build()
+		cfg := testConfig()
+		cfg.MinCountFromJobParallelism = true
+		d, err := NewPodGroupDiscoverer(c, cfg)
+		require.NoError(t, err)
+
+		requestPod := withJobLabel(
+			makePodInGroup("pod-0", "default", "my-pg", "10.0.0.1", corev1.PodRunning), "my-job")
+		_, err = d.DiscoverPeers(context.Background(), requestPod)
+		require.ErrorContains(t, err, "parallelism")
 	})
 }
