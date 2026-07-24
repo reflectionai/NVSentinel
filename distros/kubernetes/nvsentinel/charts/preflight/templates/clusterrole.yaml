@@ -42,4 +42,13 @@ rules:
   {{- end }}
     verbs: ["get", "list", "watch"]
 
+  {{- if .Values.gangDiscovery.minCountFromJobParallelism }}
+  # Owning-Job lookup for gang sizing (no PodGroup CR on this cluster)
+  # get/list/watch: the controller-runtime client is cache-backed, so the
+  # first Job read starts a cluster-wide informer needing list+watch.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
+
 {{- end }}

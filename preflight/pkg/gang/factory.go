@@ -142,12 +142,13 @@ func newPodGroupDiscoverer(
 	peerFilter types.PeerFilter,
 ) (GangDiscoverer, error) {
 	podGroupConfig := discoverer.PodGroupConfig{
-		Name:           cfg.Name,
-		AnnotationKeys: cfg.AnnotationKeys,
-		LabelKeys:      cfg.LabelKeys,
-		PodGroupGVK:    gvk,
-		MinCountExpr:   cfg.MinCountExpr,
-		PeerFilter:     peerFilter,
+		Name:                       cfg.Name,
+		AnnotationKeys:             cfg.AnnotationKeys,
+		LabelKeys:                  cfg.LabelKeys,
+		PodGroupGVK:                gvk,
+		MinCountExpr:               cfg.MinCountExpr,
+		PeerFilter:                 peerFilter,
+		MinCountFromJobParallelism: cfg.MinCountFromJobParallelism,
 	}
 
 	return discoverer.NewPodGroupDiscoverer(c, podGroupConfig)

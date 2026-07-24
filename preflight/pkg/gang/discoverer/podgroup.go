@@ -23,11 +23,16 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// batchJobNameLabel is the label the Job controller stamps on every pod it
+// creates, naming the owning Job.
+const batchJobNameLabel = "batch.kubernetes.io/job-name"
 
 // PodGroupConfig defines the configuration for a PodGroup-based gang discoverer.
 type PodGroupConfig struct {
@@ -51,6 +56,11 @@ type PodGroupConfig struct {
 	// When set, only pods passing the filter are counted and ExpectedMinCount
 	// is derived from the filtered peer count instead of the CRD's minMember.
 	PeerFilter types.PeerFilter
+
+	// MinCountFromJobParallelism selects the owning Job's spec.parallelism
+	// as the gang-size source instead of the PodGroup CR (see
+	// config.GangDiscoveryConfig).
+	MinCountFromJobParallelism bool
 }
 
 // PodGroupDiscoverer discovers gang members using PodGroup CRDs.
@@ -155,11 +165,26 @@ func (d *PodGroupDiscoverer) DiscoverPeers(ctx context.Context, pod *corev1.Pod)
 		"podGroup", podGroupName,
 		"gangID", gangID)
 
-	// Get expected size from PodGroup CRD - required for correct gang coordination
-	expectedCount, err := d.getPodGroupMinMember(ctx, pod.Namespace, podGroupName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get PodGroup %s/%s minMember (check RBAC): %w",
-			pod.Namespace, podGroupName, err)
+	// Get the expected gang size - required for correct gang coordination.
+	// Two mutually exclusive sources, selected by configuration: the owning
+	// Job's parallelism (schedulers that create no PodGroups), or the
+	// PodGroup CRD (the default; e.g. KAI, Volcano).
+	var expectedCount int
+
+	var err error
+
+	if d.config.MinCountFromJobParallelism {
+		expectedCount, err = d.getJobParallelism(ctx, pod)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get owning Job parallelism for pod %s/%s (check RBAC): %w",
+				pod.Namespace, pod.Name, err)
+		}
+	} else {
+		expectedCount, err = d.getPodGroupMinMember(ctx, pod.Namespace, podGroupName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get PodGroup %s/%s minMember (check RBAC): %w",
+				pod.Namespace, podGroupName, err)
+		}
 	}
 
 	var podList corev1.PodList
@@ -225,6 +250,30 @@ func (d *PodGroupDiscoverer) isPeerMatch(p *corev1.Pod, podGroupName string) boo
 	}
 
 	return d.config.PeerFilter == nil || d.config.PeerFilter(p)
+}
+
+// getJobParallelism retrieves the gang size from the pod's owning Job's
+// spec.parallelism. For gang workloads shaped as one indexed Job per gang
+// (e.g. a JobSet replicated job with parallelism == gang size), the Job is
+// the workload's own record of how many pods will run.
+func (d *PodGroupDiscoverer) getJobParallelism(ctx context.Context, pod *corev1.Pod) (int, error) {
+	jobName := pod.Labels[batchJobNameLabel]
+	if jobName == "" {
+		return 0, fmt.Errorf("pod %s/%s has no %s label; cannot size gang from its owning Job",
+			pod.Namespace, pod.Name, batchJobNameLabel)
+	}
+
+	var job batchv1.Job
+	if err := d.client.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: jobName}, &job); err != nil {
+		return 0, fmt.Errorf("failed to get Job %s/%s: %w", pod.Namespace, jobName, err)
+	}
+
+	if job.Spec.Parallelism == nil || *job.Spec.Parallelism < 1 {
+		return 0, fmt.Errorf("job %s/%s has no positive spec.parallelism; cannot size gang",
+			pod.Namespace, jobName)
+	}
+
+	return int(*job.Spec.Parallelism), nil
 }
 
 // getPodGroupMinMember retrieves the minMember field from a PodGroup CRD using CEL.
