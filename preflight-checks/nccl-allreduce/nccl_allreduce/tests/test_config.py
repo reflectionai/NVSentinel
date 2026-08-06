@@ -89,6 +89,7 @@ class TestConfigFromEnv:
             cfg = Config.from_env()
             assert cfg.bw_threshold_gbps == 100.0
             assert cfg.gang_timeout_seconds == 600
+            assert cfg.collective_timeout_seconds == 120
             assert cfg.message_sizes == "4G,8G"
             assert cfg.benchmark_iters == 20
             assert cfg.warmup_iters == 5
@@ -101,6 +102,7 @@ class TestConfigFromEnv:
             "MESSAGE_SIZES": "1G",
             "BENCHMARK_ITERS": "10",
             "WARMUP_ITERS": "3",
+            "COLLECTIVE_TIMEOUT_SECONDS": "300",
             "SKIP_BANDWIDTH_CHECK": "true",
         }
         with patch.dict(os.environ, env, clear=True):
@@ -109,6 +111,7 @@ class TestConfigFromEnv:
             assert cfg.message_sizes == "1G"
             assert cfg.benchmark_iters == 10
             assert cfg.warmup_iters == 3
+            assert cfg.collective_timeout_seconds == 300
             assert cfg.skip_bandwidth_check is True
 
     def test_raises_without_connector_socket(self, base_env: dict[str, str]) -> None:
