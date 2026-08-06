@@ -71,6 +71,19 @@ See [ADR-034](../designs/034-preflight-check-selection.md) for design details.
 
 The `initContainers` list in the preflight chart defines which checks the webhook injects. Each entry is a standard `corev1.Container` — you control images, env vars, resource limits, security contexts, and volume mounts.
 
+Pod-scoped scratch space can be shared across selected checks with `extraEmptyDirVolumes`. The webhook creates these volumes for gang and non-gang pods; checks opt in using standard `volumeMounts`:
+
+```yaml
+extraEmptyDirVolumes:
+  - name: retry-state
+    sizeLimit: 1Mi
+initContainers:
+  - name: preflight-example
+    volumeMounts:
+      - name: retry-state
+        mountPath: /var/run/preflight-retries
+```
+
 The webhook automatically injects these env vars into every init container (you do not need to set them):
 
 | Env var | Source | Purpose |
@@ -302,6 +315,7 @@ For DRA / device claims mirrored into init containers, see [ADR-026 §DRA Integr
 | Webhook TLS, failure policy, cert provider | `preflight.webhook` |
 | Init container placement (append/prepend) | `preflight.initContainerPlacement` |
 | Injected init container images and env | `preflight.initContainers` |
+| Pod-scoped emptyDir volumes | `preflight.extraEmptyDirVolumes` |
 | GPU / network resource names | `preflight.gpuResourceNames`, `preflight.networkResourceNames` |
 | Copy NCCL / fabric env and mounts from user containers | `preflight.ncclEnvPatterns`, `preflight.volumeMountPatterns` |
 | Gang discovery | `preflight.gangDiscovery` |

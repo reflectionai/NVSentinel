@@ -981,6 +981,43 @@ func TestInjectVolumes(t *testing.T) {
 		}
 	})
 
+	t.Run("extra emptyDir volume added without gang context", func(t *testing.T) {
+		sizeLimit := resource.MustParse("1Mi")
+		cfg := testConfig()
+		cfg.ExtraEmptyDirVolumes = []config.ExtraEmptyDirVolume{{
+			Name:      "retry-state",
+			Medium:    corev1.StorageMediumMemory,
+			SizeLimit: &sizeLimit,
+		}}
+		injector := &Injector{cfg: cfg}
+
+		volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, nil))
+		volume := requireVolume(t, volumes, "retry-state")
+		require.NotNil(t, volume.EmptyDir)
+		assert.Equal(t, corev1.StorageMediumMemory, volume.EmptyDir.Medium)
+		require.NotNil(t, volume.EmptyDir.SizeLimit)
+		assert.Equal(t, sizeLimit, *volume.EmptyDir.SizeLimit)
+	})
+
+	t.Run("extra emptyDir volume skipped if pod already has its name", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.ExtraEmptyDirVolumes = []config.ExtraEmptyDirVolume{{Name: "retry-state"}}
+		injector := &Injector{cfg: cfg}
+		pod := &corev1.Pod{Spec: corev1.PodSpec{Volumes: []corev1.Volume{{
+			Name: "retry-state",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		}}}}
+
+		patches := injector.injectVolumes(pod, nil)
+		for _, patch := range patches {
+			if volume, ok := patch.Value.(corev1.Volume); ok {
+				assert.NotEqual(t, "retry-state", volume.Name)
+			}
+		}
+	})
+
 	t.Run("gang ConfigMap volume is optional", func(t *testing.T) {
 		injector := &Injector{cfg: testGangConfig()}
 		gangCtx := &GangContext{GangID: "test", ConfigMapName: "preflight-test"}
@@ -1204,8 +1241,8 @@ func testConfig() *config.Config {
 			GPUResourceNames:       []string{"nvidia.com/gpu"},
 			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
 			InitContainerPlacement: config.PlacementAppend,
-			ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
-			ProcessingStrategy: "EXECUTE_REMEDIATION",
+			ConnectorSocket:        "/var/run/nvsentinel/nvsentinel.sock",
+			ProcessingStrategy:     "EXECUTE_REMEDIATION",
 		},
 	}
 }

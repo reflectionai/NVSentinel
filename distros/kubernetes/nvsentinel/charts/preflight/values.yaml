@@ -238,6 +238,14 @@ volumeMountPatterns:
   - "nccl-*"
   - "dev-shm"
 
+# Pod-scoped emptyDir volumes created whenever preflight init containers are
+# injected. Reference these by name from selected initContainers.volumeMounts.
+# Unlike inherited user mounts, these are available to gang and non-gang pods.
+extraEmptyDirVolumes: []
+#  - name: retry-state
+#    medium: Memory
+#    sizeLimit: 1Mi
+
 # Additional env vars appended to the preflight-nccl-allreduce init container
 # AFTER user-container env vars are copied. Use for standalone testing or
 # to override specific values.
