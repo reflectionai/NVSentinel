@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/google/cel-go/cel"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
@@ -33,6 +34,14 @@ import (
 // batchJobNameLabel is the label the Job controller stamps on every pod it
 // creates, naming the owning Job.
 const batchJobNameLabel = "batch.kubernetes.io/job-name"
+
+// ExpectedCountAnnotation is the pod annotation through which a workload
+// declares its gang's expected peer count explicitly. It takes precedence
+// over every other sizing source: it exists for pods that carry no sizing
+// record those sources can read (e.g. RayCluster workers, which have no
+// owning Job and, on schedulers like reflection-scheduler, no PodGroup CR),
+// and unlike a census of live pods it is stable from the first reconcile.
+const ExpectedCountAnnotation = "nvsentinel.nvidia.com/preflight-gang-expected-count"
 
 // PodGroupConfig defines the configuration for a PodGroup-based gang discoverer.
 type PodGroupConfig struct {
@@ -166,24 +175,30 @@ func (d *PodGroupDiscoverer) DiscoverPeers(ctx context.Context, pod *corev1.Pod)
 		"gangID", gangID)
 
 	// Get the expected gang size - required for correct gang coordination.
-	// Two mutually exclusive sources, selected by configuration: the owning
+	// An explicit annotation is authoritative when present. Otherwise, two
+	// mutually exclusive sources, selected by configuration: the owning
 	// Job's parallelism (schedulers that create no PodGroups), or the
 	// PodGroup CRD (the default; e.g. KAI, Volcano).
-	var expectedCount int
+	annotatedCount, err := expectedCountFromAnnotation(pod)
+	if err != nil {
+		return nil, err
+	}
 
-	var err error
+	expectedCount := annotatedCount
 
-	if d.config.MinCountFromJobParallelism {
-		expectedCount, err = d.getJobParallelism(ctx, pod)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get owning Job parallelism for pod %s/%s (check RBAC): %w",
-				pod.Namespace, pod.Name, err)
-		}
-	} else {
-		expectedCount, err = d.getPodGroupMinMember(ctx, pod.Namespace, podGroupName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get PodGroup %s/%s minMember (check RBAC): %w",
-				pod.Namespace, podGroupName, err)
+	if expectedCount == 0 {
+		if d.config.MinCountFromJobParallelism {
+			expectedCount, err = d.getJobParallelism(ctx, pod)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get owning Job parallelism for pod %s/%s (check RBAC): %w",
+					pod.Namespace, pod.Name, err)
+			}
+		} else {
+			expectedCount, err = d.getPodGroupMinMember(ctx, pod.Namespace, podGroupName)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get PodGroup %s/%s minMember (check RBAC): %w",
+					pod.Namespace, podGroupName, err)
+			}
 		}
 	}
 
@@ -221,8 +236,10 @@ func (d *PodGroupDiscoverer) DiscoverPeers(ctx context.Context, pod *corev1.Pod)
 	// When a peer filter is active, the CRD's minMember may include pods
 	// that are not gang participants (e.g., a head pod without GPUs).
 	// Use the filtered count so init containers don't wait for peers
-	// that will never register.
-	if d.config.PeerFilter != nil {
+	// that will never register. An annotated count already counts exactly
+	// the gang participants and, unlike this census of live pods, does not
+	// under-count while the workload's pods are still being created.
+	if annotatedCount == 0 && d.config.PeerFilter != nil {
 		expectedCount = len(peers)
 	}
 
@@ -250,6 +267,25 @@ func (d *PodGroupDiscoverer) isPeerMatch(p *corev1.Pod, podGroupName string) boo
 	}
 
 	return d.config.PeerFilter == nil || d.config.PeerFilter(p)
+}
+
+// expectedCountFromAnnotation reads the explicit gang-size annotation.
+// Returns 0 when the annotation is absent. A present-but-invalid value is
+// an error rather than a fallback, so a mis-stamped workload fails
+// discovery loudly instead of forming a wrongly-sized gang.
+func expectedCountFromAnnotation(pod *corev1.Pod) (int, error) {
+	raw := pod.Annotations[ExpectedCountAnnotation]
+	if raw == "" {
+		return 0, nil
+	}
+
+	count, err := strconv.Atoi(raw)
+	if err != nil || count < 1 {
+		return 0, fmt.Errorf("pod %s/%s has invalid %s annotation %q; want a positive integer",
+			pod.Namespace, pod.Name, ExpectedCountAnnotation, raw)
+	}
+
+	return count, nil
 }
 
 // getJobParallelism retrieves the gang size from the pod's owning Job's

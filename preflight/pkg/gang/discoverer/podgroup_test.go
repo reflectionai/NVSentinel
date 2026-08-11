@@ -458,3 +458,67 @@ func TestPodGroupDiscoverer_MinCountFromJobParallelism(t *testing.T) {
 		require.ErrorContains(t, err, "parallelism")
 	})
 }
+
+func withExpectedCount(pod *corev1.Pod, count string) *corev1.Pod {
+	pod.Annotations[ExpectedCountAnnotation] = count
+	return pod
+}
+
+func TestPodGroupDiscoverer_ExpectedCountAnnotation(t *testing.T) {
+	t.Run("annotation sizes gang with no owning Job and no PodGroup CR", func(t *testing.T) {
+		pods := []runtime.Object{
+			withExpectedCount(makePodInGroup("pod-0", "default", "my-pg", "10.0.0.1", corev1.PodRunning), "4"),
+			withExpectedCount(makePodInGroup("pod-1", "default", "my-pg", "10.0.0.2", corev1.PodPending), "4"),
+		}
+
+		c := fake.NewClientBuilder().WithRuntimeObjects(pods...).Build()
+		cfg := testConfig()
+		cfg.MinCountFromJobParallelism = true
+		d, err := NewPodGroupDiscoverer(c, cfg)
+		require.NoError(t, err)
+
+		requestPod := withExpectedCount(
+			makePodInGroup("pod-0", "default", "my-pg", "10.0.0.1", corev1.PodRunning), "4")
+		info, err := d.DiscoverPeers(context.Background(), requestPod)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, 4, info.ExpectedMinCount)
+		assert.Len(t, info.Peers, 2)
+	})
+
+	t.Run("annotation takes precedence over the peer-filter census", func(t *testing.T) {
+		pods := []runtime.Object{
+			withExpectedCount(makePodInGroup("pod-0", "default", "my-pg", "10.0.0.1", corev1.PodRunning), "4"),
+			withExpectedCount(makePodInGroup("pod-1", "default", "my-pg", "10.0.0.2", corev1.PodPending), "4"),
+		}
+
+		c := fake.NewClientBuilder().WithRuntimeObjects(pods...).Build()
+		cfg := testConfig()
+		cfg.PeerFilter = func(*corev1.Pod) bool { return true }
+		d, err := NewPodGroupDiscoverer(c, cfg)
+		require.NoError(t, err)
+
+		requestPod := withExpectedCount(
+			makePodInGroup("pod-0", "default", "my-pg", "10.0.0.1", corev1.PodRunning), "4")
+		info, err := d.DiscoverPeers(context.Background(), requestPod)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, 4, info.ExpectedMinCount)
+		assert.Len(t, info.Peers, 2)
+	})
+
+	t.Run("invalid annotation fails discovery", func(t *testing.T) {
+		pods := []runtime.Object{
+			withExpectedCount(makePodInGroup("pod-0", "default", "my-pg", "10.0.0.1", corev1.PodRunning), "zero"),
+		}
+
+		c := fake.NewClientBuilder().WithRuntimeObjects(pods...).Build()
+		d, err := NewPodGroupDiscoverer(c, testConfig())
+		require.NoError(t, err)
+
+		requestPod := withExpectedCount(
+			makePodInGroup("pod-0", "default", "my-pg", "10.0.0.1", corev1.PodRunning), "zero")
+		_, err = d.DiscoverPeers(context.Background(), requestPod)
+		require.ErrorContains(t, err, ExpectedCountAnnotation)
+	})
+}
