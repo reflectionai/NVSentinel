@@ -35,6 +35,7 @@ data:
     {{- end }}
     connectorSocket: {{ include "preflight.connectorSocket" . | quote }}
     processingStrategy: {{ include "preflight.processingStrategy" . | quote }}
+    dynamicChecks: {{ .Values.dynamicChecks | default false }}
     gangDiscovery:
       {{- toYaml .Values.gangDiscovery | nindent 6 }}
     gangCoordination:

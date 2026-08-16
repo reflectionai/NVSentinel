@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-{{- if .Values.gangCoordination.enabled }}
+{{- if or .Values.gangCoordination.enabled .Values.dynamicChecks }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -20,16 +20,17 @@ metadata:
   labels:
     {{- include "preflight.labels" . | nindent 4 }}
 rules:
+  {{- if .Values.gangCoordination.enabled }}
   # Core resources for gang discovery
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
-  
+
   # ConfigMaps for gang coordination
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  
+
   # Gang discovery API - dynamically generated based on gangDiscovery config
   {{- if .Values.gangDiscovery.podGroupGVR }}
   # PodGroup-based scheduler ({{ .Values.gangDiscovery.name | default "custom" }})
@@ -41,6 +42,17 @@ rules:
     resources: ["workloads"]
   {{- end }}
     verbs: ["get", "list", "watch"]
+  {{- end }}
+
+  {{- if .Values.dynamicChecks }}
+  # PreflightCheck custom resources for dynamic check registration (ADR-041)
+  - apiGroups: ["preflight.nvsentinel.nvidia.com"]
+    resources: ["preflightchecks"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["preflight.nvsentinel.nvidia.com"]
+    resources: ["preflightchecks/status"]
+    verbs: ["get", "update", "patch"]
+  {{- end }}
 
   {{- if .Values.gangDiscovery.minCountFromJobParallelism }}
   # Owning-Job lookup for gang sizing (no PodGroup CR on this cluster)

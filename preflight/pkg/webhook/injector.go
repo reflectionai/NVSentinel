@@ -24,6 +24,7 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
+	"github.com/nvidia/nvsentinel/preflight/pkg/registry"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -60,12 +61,26 @@ type PatchOperation struct {
 type Injector struct {
 	cfg        *config.Config
 	discoverer gang.GangDiscoverer
+	// registry serves the set of available checks (static chart config merged
+	// with dynamically registered PreflightCheck CRs). The injector reads it
+	// on every admission so dynamic checks take effect without a restart.
+	registry *registry.Registry
 }
 
+// NewInjector builds an injector whose available checks come only from the
+// static chart config (cfg.InitContainers). Use NewInjectorWithRegistry to
+// share a registry that the PreflightCheck controller can update at runtime.
 func NewInjector(cfg *config.Config, discoverer gang.GangDiscoverer) *Injector {
+	return NewInjectorWithRegistry(cfg, discoverer, registry.New(cfg.InitContainers))
+}
+
+// NewInjectorWithRegistry builds an injector that reads available checks from
+// the supplied registry.
+func NewInjectorWithRegistry(cfg *config.Config, discoverer gang.GangDiscoverer, reg *registry.Registry) *Injector {
 	return &Injector{
 		cfg:        cfg,
 		discoverer: discoverer,
+		registry:   reg,
 	}
 }
 
@@ -257,12 +272,16 @@ func (i *Injector) updateMax(resources corev1.ResourceList, name corev1.Resource
 // selectInitContainers returns the subset of configured init containers to
 // inject based on the pod's preflight-checks annotation or defaultEnabled.
 func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainerSpec, error) {
+	// Available checks = static chart config merged with dynamically
+	// registered PreflightCheck CRs (read fresh on every admission).
+	available := i.registry.Checks()
+
 	ann, ok := pod.Annotations[PreflightChecksAnnotation]
 	if !ok {
 		// No annotation — use defaultEnabled.
 		var result []config.InitContainerSpec
 
-		for _, spec := range i.cfg.InitContainers {
+		for _, spec := range available {
 			if spec.IsDefaultEnabled() {
 				result = append(result, spec)
 			} else {
@@ -286,9 +305,9 @@ func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainer
 		return nil, nil
 	}
 
-	configuredByName := make(map[string]config.InitContainerSpec, len(i.cfg.InitContainers))
+	configuredByName := make(map[string]config.InitContainerSpec, len(available))
 
-	for _, spec := range i.cfg.InitContainers {
+	for _, spec := range available {
 		configuredByName[spec.Name] = spec
 	}
 
@@ -314,7 +333,7 @@ func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainer
 			"annotation %s references unknown checks: %s (configured: %s)",
 			PreflightChecksAnnotation,
 			strings.Join(unknown, ", "),
-			strings.Join(configuredNames(i.cfg.InitContainers), ", "))
+			strings.Join(configuredNames(available), ", "))
 	}
 
 	return result, nil

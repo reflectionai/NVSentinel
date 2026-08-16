@@ -285,6 +285,12 @@ gangDiscovery: {}
   #   resource: "podgroups"
   # minCountExpr: "podGroup.spec.minMember"  # CEL expression
 
+# Dynamic preflight-check registration (ADR-041). When true, the controller
+# watches PreflightCheck custom resources and makes them available to the
+# injector at runtime, without redeploying NVSentinel. Requires the
+# PreflightCheck CRD (installed from this chart's crds/) and the RBAC below.
+dynamicChecks: false
+
 # Gang coordination configuration for multi-node checks (e.g., nccl-allreduce)
 gangCoordination:
   # Enable gang coordination (required for gang-wide checks)

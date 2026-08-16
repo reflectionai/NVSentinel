@@ -24,6 +24,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
+	"github.com/nvidia/nvsentinel/preflight/pkg/registry"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -48,9 +49,22 @@ type Handler struct {
 	onGangRegister GangRegistrationFunc
 }
 
+// NewHandler builds a handler backed by a static, chart-only check registry.
 func NewHandler(cfg *config.Config, discoverer gang.GangDiscoverer, onGangRegister GangRegistrationFunc) *Handler {
+	return NewHandlerWithRegistry(cfg, discoverer, onGangRegister, registry.New(cfg.InitContainers))
+}
+
+// NewHandlerWithRegistry builds a handler whose injector reads available checks
+// from the supplied registry (shared with the PreflightCheck controller so
+// dynamically registered checks take effect without a restart).
+func NewHandlerWithRegistry(
+	cfg *config.Config,
+	discoverer gang.GangDiscoverer,
+	onGangRegister GangRegistrationFunc,
+	reg *registry.Registry,
+) *Handler {
 	return &Handler{
-		injector:       NewInjector(cfg, discoverer),
+		injector:       NewInjectorWithRegistry(cfg, discoverer, reg),
 		onGangRegister: onGangRegister,
 	}
 }
