@@ -112,6 +112,11 @@ injectedImagePullSecrets: []
 # When the annotation is absent, all containers with defaultEnabled: true
 # (or omitted, which defaults to true) are injected.
 
+# By default, a requested check absent from initContainers rejects pod
+# admission. Set this only when workload-level check policy is broader than
+# this cluster's configured checks; unavailable names are then omitted.
+ignoreUnknownChecks: false
+
 initContainers:
   # defaultEnabled: true  # (default when omitted)
   - name: preflight-dcgm-diag

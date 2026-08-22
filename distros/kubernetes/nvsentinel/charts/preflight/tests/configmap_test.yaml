@@ -1,0 +1,17 @@
+suite: configmap
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: should reject unknown requested checks by default
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "ignoreUnknownChecks: false"
+
+  - it: should pass ignoreUnknownChecks to the webhook
+    set:
+      ignoreUnknownChecks: true
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "ignoreUnknownChecks: true"

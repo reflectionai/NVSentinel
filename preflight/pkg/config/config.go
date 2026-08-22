@@ -60,11 +60,14 @@ func (s *InitContainerSpec) IsDefaultEnabled() bool {
 }
 
 type FileConfig struct {
-	InitContainers       []InitContainerSpec `yaml:"initContainers"`
-	GPUResourceNames     []string            `yaml:"gpuResourceNames"`
-	NetworkResourceNames []string            `yaml:"networkResourceNames"`
-	ConnectorSocket      string              `yaml:"connectorSocket"`
-	ProcessingStrategy   string              `yaml:"processingStrategy"`
+	InitContainers []InitContainerSpec `yaml:"initContainers"`
+	// IgnoreUnknownChecks omits annotation-requested checks absent from
+	// InitContainers instead of rejecting pod admission.
+	IgnoreUnknownChecks  bool     `yaml:"ignoreUnknownChecks,omitempty"`
+	GPUResourceNames     []string `yaml:"gpuResourceNames"`
+	NetworkResourceNames []string `yaml:"networkResourceNames"`
+	ConnectorSocket      string   `yaml:"connectorSocket"`
+	ProcessingStrategy   string   `yaml:"processingStrategy"`
 
 	GangDiscovery    GangDiscoveryConfig    `yaml:"gangDiscovery"`
 	GangCoordination GangCoordinationConfig `yaml:"gangCoordination"`
