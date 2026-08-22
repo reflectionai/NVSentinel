@@ -309,12 +309,17 @@ func (i *Injector) selectInitContainers(pod *corev1.Pod) ([]config.InitContainer
 		result = append(result, spec)
 	}
 
-	if len(unknown) > 0 {
+	if len(unknown) > 0 && !i.cfg.IgnoreUnknownChecks {
 		return nil, fmt.Errorf(
 			"annotation %s references unknown checks: %s (configured: %s)",
 			PreflightChecksAnnotation,
 			strings.Join(unknown, ", "),
 			strings.Join(configuredNames(i.cfg.InitContainers), ", "))
+	}
+	if len(unknown) > 0 {
+		slog.Debug("Ignoring requested preflight checks absent from configuration",
+			"checks", unknown,
+			"configuredChecks", configuredNames(i.cfg.InitContainers))
 	}
 
 	return result, nil
