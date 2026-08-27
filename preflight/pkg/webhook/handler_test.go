@@ -31,8 +31,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func buildAdmissionReview(pod *corev1.Pod, uid types.UID, namespace string) []byte {
@@ -58,7 +60,7 @@ func handlerConfig() *config.Config {
 			InitContainers: []config.InitContainerSpec{
 				{Container: corev1.Container{Name: "preflight-dcgm-diag", Image: "dcgm:latest"}},
 			},
-			GPUResourceNames: []string{"nvidia.com/gpu"},
+			GPUResourceNames:   []string{"nvidia.com/gpu"},
 			ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
 			ProcessingStrategy: "EXECUTE_REMEDIATION",
 		},
@@ -83,7 +85,7 @@ func handlerGangConfig() *config.Config {
 // gang registration callback, and error responses for invalid input.
 func TestHandleMutate(t *testing.T) {
 	t.Run("valid GPU pod returns patch", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -115,7 +117,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("valid non-GPU pod returns allowed without patch", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -139,7 +141,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("invalid body returns 400", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil)
 
 		req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader([]byte("not-json")))
 		rec := httptest.NewRecorder()
@@ -150,7 +152,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("invalid pod JSON returns not allowed", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil)
 
 		// Build the outer JSON manually so that object.raw contains invalid JSON
 		// without json.Marshal rejecting it.
@@ -184,7 +186,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("nil request returns allowed", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil)
 
 		review := admissionv1.AdmissionReview{
 			TypeMeta: metav1.TypeMeta{APIVersion: "admission.k8s.io/v1", Kind: "AdmissionReview"},
@@ -205,7 +207,7 @@ func TestHandleMutate(t *testing.T) {
 	})
 
 	t.Run("response UID matches request", func(t *testing.T) {
-		handler := NewHandler(handlerConfig(), nil, nil)
+		handler := NewHandler(handlerConfig(), nil, nil, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -239,7 +241,7 @@ func TestHandleMutate(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = reg
-		})
+		}, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -277,7 +279,7 @@ func TestHandleMutate(t *testing.T) {
 			defer mu.Unlock()
 			called = true
 			captured = reg
-		})
+		}, nil)
 
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: "worker-0"},
@@ -316,7 +318,7 @@ func TestHandleMutate(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 			captured = reg
-		})
+		}, nil)
 
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "train-"},
@@ -345,7 +347,7 @@ func TestHandleMutate(t *testing.T) {
 		called := false
 		handler := NewHandler(handlerConfig(), nil, func(_ context.Context, _ GangRegistration) {
 			called = true
-		})
+		}, nil)
 
 		pod := &corev1.Pod{
 			Spec: corev1.PodSpec{
@@ -366,4 +368,42 @@ func TestHandleMutate(t *testing.T) {
 
 		assert.False(t, called)
 	})
+}
+
+func TestProvisionedRayClusterSkipsOnlyNamedPreflight(t *testing.T) {
+	rayCluster := &unstructured.Unstructured{Object: map[string]any{
+		"status": map[string]any{"conditions": []any{map[string]any{
+			"type": "RayClusterProvisioned", "status": "True",
+		}}},
+	}}
+	rayCluster.SetAPIVersion("ray.io/v1")
+	rayCluster.SetKind("RayCluster")
+	rayCluster.SetNamespace("default")
+	rayCluster.SetName("ray-cluster")
+	rayCluster.SetUID("ray-cluster-uid")
+	reader := fake.NewClientBuilder().WithObjects(rayCluster).Build()
+	cfg := handlerConfig()
+	cfg.InitContainers = append(cfg.InitContainers, config.InitContainerSpec{
+		Container: corev1.Container{Name: "preflight-sdc-replay-temporal"},
+	})
+	handler := NewHandler(cfg, nil, nil, reader)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "default",
+			Annotations: map[string]string{
+				PreflightChecksAnnotation:               "preflight-sdc-replay-temporal,preflight-dcgm-diag",
+				PreflightRunOncePerRayClusterAnnotation: "preflight-sdc-replay-temporal",
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "ray.io/v1",
+				Kind:       "RayCluster",
+				Name:       "ray-cluster",
+				UID:        "ray-cluster-uid",
+				Controller: boolPtr(true),
+			}},
+		},
+	}
+
+	handler.omitCompletedRayClusterPreflight(context.Background(), pod)
+	assert.Equal(t, "preflight-dcgm-diag", pod.Annotations[PreflightChecksAnnotation])
 }
