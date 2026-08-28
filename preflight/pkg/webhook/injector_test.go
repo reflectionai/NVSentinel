@@ -54,7 +54,7 @@ func TestCollectMatchingEnvVars(t *testing.T) {
 	assert.Equal(t, "", findEnv(result, "HOME"))
 }
 
-func TestCollectStaticGangEnvVars(t *testing.T) {
+func TestCollectTorchrunGangEnvVars(t *testing.T) {
 	injector := &Injector{cfg: testGangConfig()}
 	rankSource := &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{
 		FieldPath: "metadata.labels['batch.kubernetes.io/job-completion-index']",
@@ -72,9 +72,9 @@ func TestCollectStaticGangEnvVars(t *testing.T) {
 		}},
 	}
 
-	result := injector.collectStaticGangEnvVars(containers)
+	result := injector.collectTorchrunGangEnvVars(containers)
 
-	require.NoError(t, validateStaticGangEnv(result))
+	require.NoError(t, validateTCPStoreGangEnv(result))
 	assert.Equal(t, "train-0.train.default.svc.cluster.local", findEnv(result, "MASTER_ADDR"))
 	assert.Equal(t, "29400", findEnv(result, "MASTER_PORT"))
 	assert.Equal(t, "128", findEnv(result, "WORLD_SIZE"))
@@ -82,8 +82,8 @@ func TestCollectStaticGangEnvVars(t *testing.T) {
 	assert.False(t, hasNamedEnvVar(result, "IGNORED"))
 }
 
-func TestValidateStaticGangEnvRequiresTorchrunContract(t *testing.T) {
-	err := validateStaticGangEnv([]corev1.EnvVar{
+func TestValidateTCPStoreGangEnvRequiresTorchrunContract(t *testing.T) {
+	err := validateTCPStoreGangEnv([]corev1.EnvVar{
 		{Name: "MASTER_ADDR", Value: "train-0.train.default.svc.cluster.local"},
 		{Name: "WORLD_SIZE", Value: "128"},
 	})
@@ -92,8 +92,8 @@ func TestValidateStaticGangEnvRequiresTorchrunContract(t *testing.T) {
 	assert.ErrorContains(t, err, "MASTER_PORT, NODE_RANK")
 }
 
-func TestValidateStaticGangEnvRejectsConfigMapReference(t *testing.T) {
-	err := validateStaticGangEnv([]corev1.EnvVar{
+func TestValidateTCPStoreGangEnvRejectsConfigMapReference(t *testing.T) {
+	err := validateTCPStoreGangEnv([]corev1.EnvVar{
 		{
 			Name: "MASTER_ADDR",
 			ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
@@ -291,10 +291,10 @@ func TestInjectInitContainers(t *testing.T) {
 			},
 		},
 		{
-			name: "static gang environment is copied without a config volume",
+			name: "TCPStore gang environment is copied without a config volume",
 			cfg: func() *config.Config {
 				cfg := testGangConfig()
-				cfg.GangCoordination.ConfigTransport = config.GangConfigTransportStaticEnv
+				cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
 				return cfg
 			}(),
 			discoverer:       &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
@@ -310,7 +310,9 @@ func TestInjectInitContainers(t *testing.T) {
 				containers, ok := initPatch.Value.([]corev1.Container)
 				require.True(t, ok)
 				require.Len(t, containers, 1)
-				assert.Equal(t, "staticEnv", findEnv(containers[0].Env, staticGangTransportEnv))
+				assert.Equal(t, "tcpStore", findEnv(containers[0].Env, gangTransportEnv))
+				assert.Equal(t, "28000", findEnv(containers[0].Env, "GANG_TCPSTORE_PORT"))
+				assert.Equal(t, "preflight-dcgm-diag", findEnv(containers[0].Env, "GANG_RENDEZVOUS_ID"))
 				assert.False(t, hasEnvVar(containers[0], "GANG_CONFIG_DIR"))
 				assert.False(t, hasVolumeMount(containers[0], types.GangConfigVolumeName))
 				for _, volume := range extractVolumes(t, patches) {
@@ -319,10 +321,10 @@ func TestInjectInitContainers(t *testing.T) {
 			},
 		},
 		{
-			name: "static gang environment requires torchrun variables",
+			name: "TCPStore gang environment requires torchrun variables",
 			cfg: func() *config.Config {
 				cfg := testGangConfig()
-				cfg.GangCoordination.ConfigTransport = config.GangConfigTransportStaticEnv
+				cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
 				return cfg
 			}(),
 			discoverer:    &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
@@ -744,9 +746,9 @@ func TestBuildInitContainers(t *testing.T) {
 		assert.True(t, hasEnvVar(c, "POD_IP"))
 	})
 
-	t.Run("static gang env preserves workload values", func(t *testing.T) {
+	t.Run("TCPStore gang env preserves workload values", func(t *testing.T) {
 		cfg := testGangConfig()
-		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportStaticEnv
+		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
 		injector := NewInjector(cfg, nil)
 		gangCtx := &GangContext{GangID: "test-gang", ConfigMapName: "preflight-test-gang"}
 
@@ -756,13 +758,57 @@ func TestBuildInitContainers(t *testing.T) {
 
 		require.Len(t, containers, 1)
 		env := containers[0].Env
-		assert.Equal(t, "staticEnv", findEnv(env, staticGangTransportEnv))
+		assert.Equal(t, "tcpStore", findEnv(env, gangTransportEnv))
+		assert.Equal(t, "28000", findEnv(env, "GANG_TCPSTORE_PORT"))
+		assert.Equal(t, "preflight-dcgm-diag", findEnv(env, "GANG_RENDEZVOUS_ID"))
 		assert.Equal(t, "train-0.train.default.svc.cluster.local", findEnv(env, "MASTER_ADDR"))
 		assert.Equal(t, "29400", findEnv(env, "MASTER_PORT"))
 		assert.Equal(t, "128", findEnv(env, "WORLD_SIZE"))
 		require.NotNil(t, findEnvVar(t, env, "NODE_RANK").ValueFrom)
 		assert.False(t, hasEnvVar(containers[0], "GANG_CONFIG_DIR"))
 		assert.False(t, hasVolumeMount(containers[0], types.GangConfigVolumeName))
+	})
+
+	t.Run("TCPStore gang ports are distinct per check", func(t *testing.T) {
+		cfg := testGangConfig()
+		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
+		cfg.InitContainers = append(cfg.InitContainers, config.InitContainerSpec{
+			Container: corev1.Container{
+				Name:  "preflight-sdc-replay",
+				Image: "sdc:latest",
+			},
+		})
+		injector := NewInjector(cfg, nil)
+		gangCtx := &GangContext{GangID: "test-gang"}
+
+		containers := injector.buildInitContainers(
+			staticGangPod(), corev1.ResourceList{}, gangCtx, cfg.InitContainers)
+
+		require.Len(t, containers, 2)
+		assert.Equal(t, "28000", findEnv(containers[0].Env, "GANG_TCPSTORE_PORT"))
+		assert.Equal(t, "preflight-dcgm-diag", findEnv(containers[0].Env, "GANG_RENDEZVOUS_ID"))
+		assert.Equal(t, "28001", findEnv(containers[1].Env, "GANG_TCPSTORE_PORT"))
+		assert.Equal(t, "preflight-sdc-replay", findEnv(containers[1].Env, "GANG_RENDEZVOUS_ID"))
+	})
+
+	t.Run("TCPStore gang port is stable when earlier checks are not selected", func(t *testing.T) {
+		cfg := testGangConfig()
+		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
+		cfg.InitContainers = append(cfg.InitContainers, config.InitContainerSpec{
+			Container: corev1.Container{
+				Name:  "preflight-sdc-replay",
+				Image: "sdc:latest",
+			},
+		})
+		injector := NewInjector(cfg, nil)
+		gangCtx := &GangContext{GangID: "test-gang"}
+
+		containers := injector.buildInitContainers(
+			staticGangPod(), corev1.ResourceList{}, gangCtx, cfg.InitContainers[1:])
+
+		require.Len(t, containers, 1)
+		assert.Equal(t, "28001", findEnv(containers[0].Env, "GANG_TCPSTORE_PORT"))
+		assert.Equal(t, "preflight-sdc-replay", findEnv(containers[0].Env, "GANG_RENDEZVOUS_ID"))
 	})
 
 	t.Run("user NCCL env inherited", func(t *testing.T) {
@@ -1155,9 +1201,9 @@ func TestInjectVolumes(t *testing.T) {
 		assert.Equal(t, "preflight-test", vol.ConfigMap.Name)
 	})
 
-	t.Run("static environment omits gang config volume", func(t *testing.T) {
+	t.Run("TCPStore transport omits gang config volume", func(t *testing.T) {
 		cfg := testGangConfig()
-		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportStaticEnv
+		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
 		injector := &Injector{cfg: cfg}
 		gangCtx := &GangContext{GangID: "test", ConfigMapName: "preflight-test"}
 
@@ -1410,6 +1456,7 @@ func testGangConfig() *config.Config {
 		Timeout:              "10m",
 		TimeoutDuration:      10 * time.Minute,
 		MasterPort:           29500,
+		TCPStorePortBase:     28000,
 		ConfigMapMountPath:   "/etc/preflight",
 		MirrorResourceClaims: boolPtr(true),
 	}

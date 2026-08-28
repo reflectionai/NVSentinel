@@ -18,8 +18,11 @@ tests:
 
   - it: should pass gang config transport to the webhook
     set:
-      gangCoordination.configTransport: staticEnv
+      gangCoordination.configTransport: tcpStore
     asserts:
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'configTransport: "staticEnv"'
+          pattern: 'configTransport: "tcpStore"'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: "tcpStorePortBase: 28000"

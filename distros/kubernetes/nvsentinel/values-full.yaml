@@ -1737,8 +1737,8 @@ preflight:
   # Required for nccl-allreduce. See: docs/configuration/preflight.md
   ##############################################################################
   gangCoordination:
-    # Gang bootstrap delivery: configMap or staticEnv. staticEnv copies the
-    # workload's explicit torchrun environment and creates no gang ConfigMap.
+    # Gang bootstrap delivery: configMap or tcpStore. tcpStore copies the
+    # workload's static torchrun identity and creates no gang ConfigMap.
     configTransport: "configMap"
     # Enable gang coordination (required for gang-wide checks)
     enabled: true
@@ -1746,6 +1746,8 @@ preflight:
     timeout: "10m"
     # Port for PyTorch distributed TCP bootstrap (torchrun)
     masterPort: 29500
+    # First TCPStore barrier port; each selected init container gets base + index.
+    tcpStorePortBase: 28000
     # Path where gang ConfigMaps are mounted in init containers
     configMapMountPath: "/etc/preflight"
     # NCCL topology ConfigMap name - required for Azure InfiniBand (NDv4/v5)

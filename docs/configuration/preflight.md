@@ -266,16 +266,17 @@ With the default `configTransport: configMap`:
 2. As pods become ready the gang controller populates the ConfigMap with peer information (IP, rank).
 3. Init containers read the ConfigMap at `gangCoordination.configMapMountPath` (default `/etc/preflight`) to discover the master address and peer list.
 
-With `configTransport: staticEnv`:
+With `configTransport: tcpStore`:
 
 1. The workload's main container must explicitly define literal `MASTER_ADDR`, `MASTER_PORT`, and `WORLD_SIZE` values plus a literal or Downward API `NODE_RANK`. `MASTER` and `NUM_NODES` are copied when present.
-2. At admission time the webhook copies those environment entries, including `valueFrom` sources, into each selected gang init container and adds `GANG_CONFIG_TRANSPORT=staticEnv`.
-3. The webhook creates and mounts no gang ConfigMap, and the gang controller does not publish a peer roster. The check image derives any required roster from the workload's static rendezvous contract.
+2. At admission time the webhook copies those environment entries, including `valueFrom` sources, into each selected gang init container and adds `GANG_CONFIG_TRANSPORT=tcpStore`, a per-check `GANG_TCPSTORE_PORT`, and `GANG_RENDEZVOUS_ID`.
+3. The webhook creates and mounts no gang ConfigMap, and the gang controller does not publish a peer roster. Rank 0 hosts a node-level TCPStore on the per-check port; every gang pod registers and waits for the full-job barrier before the check starts.
 
-Use `staticEnv` only for workloads whose pod DNS names and torchrun environment
+Use `tcpStore` only for workloads whose pod DNS names and torchrun environment
 provide a deterministic rank-to-address mapping understood by the selected
-check image. The webhook rejects gang injection when a required environment
-entry is missing.
+check image. The store carries only barrier state, not a peer roster; checks
+derive addresses locally. The webhook rejects gang injection when a required
+environment entry is missing.
 
 The ConfigMap transport's mounted directory contains:
 
@@ -288,7 +289,7 @@ The ConfigMap transport's mounted directory contains:
 | `gang_id` | Unique gang identifier (discoverer prefix + namespace + group) |
 
 ConfigMaps are labeled `nvsentinel.nvidia.com/managed-by: preflight` and named
-with a `preflight-` prefix. The static environment transport creates no gang
+with a `preflight-` prefix. The TCPStore transport creates no gang
 ConfigMaps.
 
 ### Key `gangCoordination` values
@@ -296,9 +297,10 @@ ConfigMaps.
 ```yaml
 gangCoordination:
   enabled: true
-  configTransport: "configMap" # Or "staticEnv"
+  configTransport: "configMap" # Or "tcpStore"
   timeout: "10m"            # Max wait for all members to register
   masterPort: 29500         # PyTorch distributed bootstrap port
+  tcpStorePortBase: 28000   # Per-check barrier ports start here
   configMapMountPath: "/etc/preflight"
 
   # Azure InfiniBand topology (required for NDv4/v5)

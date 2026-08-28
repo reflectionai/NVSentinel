@@ -51,10 +51,10 @@ const (
 	// GangConfigTransportConfigMap mounts a controller-managed ConfigMap.
 	GangConfigTransportConfigMap GangConfigTransport = "configMap"
 
-	// GangConfigTransportStaticEnv reuses torchrun's static rendezvous
-	// environment from the workload's main container. No gang ConfigMap is
-	// created or mounted.
-	GangConfigTransportStaticEnv GangConfigTransport = "staticEnv"
+	// GangConfigTransportTCPStore reuses torchrun's static identity and forms
+	// the gang through a node-level TCPStore. No gang ConfigMap is created or
+	// mounted.
+	GangConfigTransportTCPStore GangConfigTransport = "tcpStore"
 )
 
 // InitContainerSpec wraps corev1.Container with a DefaultEnabled field
@@ -151,7 +151,7 @@ type GangCoordinationConfig struct {
 	Enabled bool `yaml:"enabled"`
 
 	// ConfigTransport selects how init containers receive gang bootstrap data.
-	// Supported values are "configMap" and "staticEnv". Default: configMap.
+	// Supported values are "configMap" and "tcpStore". Default: configMap.
 	ConfigTransport GangConfigTransport `yaml:"configTransport,omitempty"`
 
 	// Timeout is the maximum time to wait for all gang members to register.
@@ -165,6 +165,12 @@ type GangCoordinationConfig struct {
 	// MasterPort is the port used for PyTorch distributed TCP bootstrap.
 	// Default: 29500
 	MasterPort int `yaml:"masterPort,omitempty"`
+
+	// TCPStorePortBase is the first port allocated to injected gang checks.
+	// Each selected init container receives this base plus its check index, so
+	// checks progressing at different speeds cannot attach to one another's
+	// store. Default: 28000
+	TCPStorePortBase int `yaml:"tcpStorePortBase,omitempty"`
 
 	// ConfigMapMountPath is the path where gang ConfigMap is mounted in init containers.
 	// Default: /etc/preflight
@@ -291,6 +297,10 @@ func (c *GangCoordinationConfig) setDefaults() {
 		c.MasterPort = 29500
 	}
 
+	if c.TCPStorePortBase == 0 {
+		c.TCPStorePortBase = 28000
+	}
+
 	if c.ConfigMapMountPath == "" {
 		c.ConfigMapMountPath = "/etc/preflight"
 	}
@@ -341,13 +351,29 @@ func (c *FileConfig) validate() error {
 
 	if c.GangCoordination.Enabled {
 		switch c.GangCoordination.ConfigTransport {
-		case GangConfigTransportConfigMap, GangConfigTransportStaticEnv:
+		case GangConfigTransportConfigMap, GangConfigTransportTCPStore:
 		default:
 			return fmt.Errorf(
 				"invalid gangCoordination.configTransport %q: must be %q or %q",
 				c.GangCoordination.ConfigTransport,
 				GangConfigTransportConfigMap,
-				GangConfigTransportStaticEnv)
+				GangConfigTransportTCPStore)
+		}
+		if c.GangCoordination.ConfigTransport == GangConfigTransportTCPStore &&
+			(c.GangCoordination.TCPStorePortBase < 1 ||
+				c.GangCoordination.TCPStorePortBase+len(c.InitContainers)-1 > 65535) {
+			return fmt.Errorf(
+				"gangCoordination.tcpStorePortBase %d cannot allocate %d init-container ports",
+				c.GangCoordination.TCPStorePortBase,
+				len(c.InitContainers))
+		}
+		if c.GangCoordination.ConfigTransport == GangConfigTransportTCPStore &&
+			c.GangCoordination.MasterPort >= c.GangCoordination.TCPStorePortBase &&
+			c.GangCoordination.MasterPort < c.GangCoordination.TCPStorePortBase+len(c.InitContainers) {
+			return fmt.Errorf(
+				"gangCoordination.masterPort %d overlaps the TCPStore port range starting at %d",
+				c.GangCoordination.MasterPort,
+				c.GangCoordination.TCPStorePortBase)
 		}
 
 		timeout, err := time.ParseDuration(c.GangCoordination.Timeout)

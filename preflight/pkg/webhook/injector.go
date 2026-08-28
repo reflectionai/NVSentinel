@@ -50,10 +50,10 @@ const (
 	// When absent, all containers with defaultEnabled (or omitted) are injected.
 	PreflightChecksAnnotation = "nvsentinel.nvidia.com/preflight-checks"
 
-	staticGangTransportEnv = "GANG_CONFIG_TRANSPORT"
+	gangTransportEnv = "GANG_CONFIG_TRANSPORT"
 )
 
-var staticGangEnvNames = []string{
+var torchrunGangEnvNames = []string{
 	"MASTER",
 	"MASTER_ADDR",
 	"MASTER_PORT",
@@ -164,8 +164,8 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 		return nil, nil, err
 	}
 	if gangCtx != nil && len(selected) > 0 &&
-		i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportStaticEnv {
-		if err := validateStaticGangEnv(i.collectStaticGangEnvVars(pod.Spec.Containers)); err != nil {
+		i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
+		if err := validateTCPStoreGangEnv(i.collectTorchrunGangEnvVars(pod.Spec.Containers)); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -358,8 +358,12 @@ func (i *Injector) buildInitContainers(
 	// configured patterns. This allows init containers to inherit fabric-
 	// specific NCCL config from the user's training container.
 	userEnvVars := i.collectMatchingEnvVars(pod.Spec.Containers)
-	staticGangEnvVars := i.collectStaticGangEnvVars(pod.Spec.Containers)
+	torchrunGangEnvVars := i.collectTorchrunGangEnvVars(pod.Spec.Containers)
 	userVolumeMounts := i.collectMatchingVolumeMounts(pod.Spec.Containers)
+	checkIndexByName := make(map[string]int, len(i.cfg.InitContainers))
+	for checkIndex, spec := range i.cfg.InitContainers {
+		checkIndexByName[spec.Name] = checkIndex
+	}
 
 	for _, tmpl := range selected {
 		container := tmpl.DeepCopy()
@@ -386,10 +390,10 @@ func (i *Injector) buildInitContainers(
 		}
 
 		i.injectCommonEnv(container)
-		i.injectGangEnv(container, gangCtx)
+		i.injectGangEnv(container, gangCtx, checkIndexByName[container.Name])
 		if gangCtx != nil &&
-			i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportStaticEnv {
-			i.mergeEnvVars(container, staticGangEnvVars)
+			i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
+			i.mergeEnvVars(container, torchrunGangEnvVars)
 		}
 
 		// Copy matching env vars from user containers (lower precedence
@@ -416,7 +420,7 @@ func (i *Injector) injectGangMounts(
 	mirrorClaims bool,
 	podResourceClaims []corev1.PodResourceClaim,
 ) {
-	if i.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportStaticEnv {
+	if i.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportTCPStore {
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 			Name:      types.GangConfigVolumeName,
 			MountPath: i.cfg.GangCoordination.ConfigMapMountPath,
@@ -623,7 +627,7 @@ func (i *Injector) collectGangVolumes(
 ) []corev1.Volume {
 	var volumes []corev1.Volume
 
-	if i.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportStaticEnv &&
+	if i.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportTCPStore &&
 		!existingVolumes[types.GangConfigVolumeName] {
 		volumes = append(volumes, i.gangConfigVolume(gangCtx))
 	}
@@ -730,7 +734,11 @@ func parseHostPathType(hostPathType string) (*corev1.HostPathType, bool) {
 }
 
 // injectGangEnv injects gang-related environment variables for multi-node checks.
-func (i *Injector) injectGangEnv(container *corev1.Container, gangCtx *GangContext) {
+func (i *Injector) injectGangEnv(
+	container *corev1.Container,
+	gangCtx *GangContext,
+	checkIndex int,
+) {
 	if gangCtx == nil {
 		return
 	}
@@ -763,11 +771,21 @@ func (i *Injector) injectGangEnv(container *corev1.Container, gangCtx *GangConte
 			},
 		},
 	}
-	if i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportStaticEnv {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  staticGangTransportEnv,
-			Value: string(config.GangConfigTransportStaticEnv),
-		})
+	if i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
+		envVars = append(envVars,
+			corev1.EnvVar{
+				Name:  gangTransportEnv,
+				Value: string(config.GangConfigTransportTCPStore),
+			},
+			corev1.EnvVar{
+				Name:  "GANG_TCPSTORE_PORT",
+				Value: strconv.Itoa(i.cfg.GangCoordination.TCPStorePortBase + checkIndex),
+			},
+			corev1.EnvVar{
+				Name:  "GANG_RENDEZVOUS_ID",
+				Value: container.Name,
+			},
+		)
 	} else {
 		envVars = append(envVars,
 			corev1.EnvVar{
@@ -784,18 +802,18 @@ func (i *Injector) injectGangEnv(container *corev1.Container, gangCtx *GangConte
 	i.mergeEnvVars(container, envVars)
 }
 
-// collectStaticGangEnvVars copies torchrun's static rendezvous contract from
+// collectTorchrunGangEnvVars copies torchrun's static identity contract from
 // one workload container. ValueFrom is preserved, including the indexed Job
 // rank. The first container with the complete required contract wins.
-func (i *Injector) collectStaticGangEnvVars(containers []corev1.Container) []corev1.EnvVar {
-	wanted := make(map[string]bool, len(staticGangEnvNames))
-	for _, name := range staticGangEnvNames {
+func (i *Injector) collectTorchrunGangEnvVars(containers []corev1.Container) []corev1.EnvVar {
+	wanted := make(map[string]bool, len(torchrunGangEnvNames))
+	for _, name := range torchrunGangEnvNames {
 		wanted[name] = true
 	}
 
 	var fallback []corev1.EnvVar
 	for _, container := range containers {
-		byName := make(map[string]corev1.EnvVar, len(staticGangEnvNames))
+		byName := make(map[string]corev1.EnvVar, len(torchrunGangEnvNames))
 		for _, env := range container.Env {
 			if wanted[env.Name] {
 				byName[env.Name] = env
@@ -803,7 +821,7 @@ func (i *Injector) collectStaticGangEnvVars(containers []corev1.Container) []cor
 		}
 
 		result := make([]corev1.EnvVar, 0, len(byName))
-		for _, name := range staticGangEnvNames {
+		for _, name := range torchrunGangEnvNames {
 			if env, exists := byName[name]; exists {
 				result = append(result, env)
 			}
@@ -811,14 +829,14 @@ func (i *Injector) collectStaticGangEnvVars(containers []corev1.Container) []cor
 		if len(result) > len(fallback) {
 			fallback = result
 		}
-		if validateStaticGangEnv(result) == nil {
+		if validateTCPStoreGangEnv(result) == nil {
 			return result
 		}
 	}
 	return fallback
 }
 
-func validateStaticGangEnv(envVars []corev1.EnvVar) error {
+func validateTCPStoreGangEnv(envVars []corev1.EnvVar) error {
 	byName := make(map[string]corev1.EnvVar, len(envVars))
 	for _, env := range envVars {
 		byName[env.Name] = env
@@ -837,7 +855,7 @@ func validateStaticGangEnv(envVars []corev1.EnvVar) error {
 	if len(missing) > 0 {
 		return fmt.Errorf(
 			"gangCoordination.configTransport %q requires literal MASTER_ADDR, MASTER_PORT, and WORLD_SIZE plus literal or downward-API NODE_RANK: missing or externally sourced %s",
-			config.GangConfigTransportStaticEnv,
+			config.GangConfigTransportTCPStore,
 			strings.Join(missing, ", "))
 	}
 	return nil

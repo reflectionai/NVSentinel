@@ -132,7 +132,7 @@ func TestGangController_TerminatingPodSkipped(t *testing.T) {
 }
 
 func TestGangController_WebhookRegistration(t *testing.T) {
-	t.Run("static environment transport creates no gang ConfigMap", func(t *testing.T) {
+	t.Run("TCPStore transport creates no gang ConfigMap", func(t *testing.T) {
 		ctx := context.Background()
 		scheme := runtime.NewScheme()
 		require.NoError(t, corev1.AddToScheme(scheme))
@@ -140,7 +140,7 @@ func TestGangController_WebhookRegistration(t *testing.T) {
 
 		cfg := &config.Config{FileConfig: config.FileConfig{
 			GangCoordination: config.GangCoordinationConfig{
-				ConfigTransport: config.GangConfigTransportStaticEnv,
+				ConfigTransport: config.GangConfigTransportTCPStore,
 			},
 		}}
 		ctrl := NewGangController(
