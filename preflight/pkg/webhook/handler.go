@@ -21,13 +21,20 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// PreflightRunOncePerRayClusterAnnotation names the preflight to skip after
+// the owning RayCluster has reached its first fully provisioned state.
+const PreflightRunOncePerRayClusterAnnotation = "nvsentinel.nvidia.com/preflight-run-once-per-raycluster"
 
 // GangRegistration is sent to the controller to register a pod with its gang.
 type GangRegistration struct {
@@ -44,14 +51,16 @@ type GangRegistration struct {
 type GangRegistrationFunc func(ctx context.Context, reg GangRegistration)
 
 type Handler struct {
-	injector       *Injector
-	onGangRegister GangRegistrationFunc
+	injector         *Injector
+	onGangRegister   GangRegistrationFunc
+	rayClusterReader client.Reader
 }
 
-func NewHandler(cfg *config.Config, discoverer gang.GangDiscoverer, onGangRegister GangRegistrationFunc) *Handler {
+func NewHandler(cfg *config.Config, discoverer gang.GangDiscoverer, onGangRegister GangRegistrationFunc, rayClusterReader client.Reader) *Handler {
 	return &Handler{
-		injector:       NewInjector(cfg, discoverer),
-		onGangRegister: onGangRegister,
+		injector:         NewInjector(cfg, discoverer),
+		onGangRegister:   onGangRegister,
+		rayClusterReader: rayClusterReader,
 	}
 }
 
@@ -123,6 +132,8 @@ func (h *Handler) mutate(ctx context.Context, req *admissionv1.AdmissionRequest)
 		pod.Namespace = req.Namespace
 	}
 
+	h.omitCompletedRayClusterPreflight(ctx, &pod)
+
 	patch, gangCtx, err := h.injector.InjectInitContainers(&pod)
 	if err != nil {
 		slog.Error("Failed to inject init containers", "error", err)
@@ -191,4 +202,63 @@ func (h *Handler) mutate(ctx context.Context, req *admissionv1.AdmissionRequest)
 		Patch:     patchBytes,
 		PatchType: &patchType,
 	}
+}
+
+func (h *Handler) omitCompletedRayClusterPreflight(ctx context.Context, pod *corev1.Pod) {
+	check := pod.Annotations[PreflightRunOncePerRayClusterAnnotation]
+	requested, explicitlySelected := pod.Annotations[PreflightChecksAnnotation]
+	if check == "" || !explicitlySelected || !h.rayClusterProvisioned(ctx, pod) {
+		return
+	}
+
+	checks, err := ParseCheckNames(requested)
+	if err != nil {
+		return // The injector reports the malformed selection.
+	}
+
+	remaining := checks[:0]
+	for _, requestedCheck := range checks {
+		if requestedCheck != check {
+			remaining = append(remaining, requestedCheck)
+		}
+	}
+	if len(remaining) == len(checks) {
+		return
+	}
+
+	pod.Annotations[PreflightChecksAnnotation] = strings.Join(remaining, ",")
+	slog.Info("Skipping completed preflight for provisioned RayCluster",
+		"namespace", pod.Namespace, "pod", pod.Name, "check", check)
+}
+
+func (h *Handler) rayClusterProvisioned(ctx context.Context, pod *corev1.Pod) bool {
+	if h.rayClusterReader == nil {
+		return false
+	}
+
+	owner := metav1.GetControllerOf(pod)
+	if owner == nil || owner.APIVersion != "ray.io/v1" || owner.Kind != "RayCluster" {
+		return false
+	}
+
+	rayCluster := &unstructured.Unstructured{}
+	rayCluster.SetAPIVersion(owner.APIVersion)
+	rayCluster.SetKind(owner.Kind)
+	if h.rayClusterReader.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: owner.Name}, rayCluster) != nil {
+		return false
+	}
+
+	if rayCluster.GetUID() != owner.UID {
+		return false
+	}
+
+	conditions, _, _ := unstructured.NestedSlice(rayCluster.Object, "status", "conditions")
+	for _, rawCondition := range conditions {
+		condition, ok := rawCondition.(map[string]any)
+		if ok && condition["type"] == "RayClusterProvisioned" && condition["status"] == "True" {
+			return true
+		}
+	}
+
+	return false
 }

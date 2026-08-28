@@ -36,6 +36,7 @@ import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -44,8 +45,9 @@ var (
 	commit  = "none"
 	date    = "unknown"
 
-	discoverer     gang.GangDiscoverer
-	onGangRegister webhook.GangRegistrationFunc
+	discoverer       gang.GangDiscoverer
+	onGangRegister   webhook.GangRegistrationFunc
+	rayClusterReader client.Reader
 )
 
 func main() {
@@ -95,7 +97,7 @@ func run() error {
 		}
 	}
 
-	handler := webhook.NewHandler(cfg, discoverer, onGangRegister)
+	handler := webhook.NewHandler(cfg, discoverer, onGangRegister, rayClusterReader)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", handler.HandleMutate)
@@ -114,6 +116,7 @@ func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context
 	if err != nil {
 		return fmt.Errorf("failed to create controller manager: %w", err)
 	}
+	rayClusterReader = mgr.GetAPIReader()
 
 	discoverer, err = gang.NewDiscovererFromConfig(
 		cfg.GangDiscovery,
