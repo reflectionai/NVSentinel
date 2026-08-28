@@ -289,11 +289,15 @@ gangDiscovery: {}
 gangCoordination:
   # Enable gang coordination (required for gang-wide checks)
   enabled: true
+  # Dynamic gang-data delivery. configMap preserves the legacy controller
+  # path; podAnnotations projects controller-written annotations through a
+  # Downward API volume and avoids kubelet ConfigMap fetches at pod startup.
+  configTransport: "configMap"
   # Maximum time to wait for all gang members to register
   timeout: "10m"
   # Port for PyTorch distributed TCP bootstrap (torchrun)
   masterPort: 29500
-  # Path where gang ConfigMap is mounted in init containers
+  # Path where gang configuration is mounted in init containers
   configMapMountPath: "/etc/preflight"
   # NCCL topology ConfigMap name — required for Azure InfiniBand.
   # Without this, NCCL cannot map GPUs to IB HCAs and falls back to TCP.

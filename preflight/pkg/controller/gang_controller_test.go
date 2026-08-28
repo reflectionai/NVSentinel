@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -131,6 +132,34 @@ func TestGangController_TerminatingPodSkipped(t *testing.T) {
 }
 
 func TestGangController_WebhookRegistration(t *testing.T) {
+	t.Run("pod annotation transport creates no gang ConfigMap", func(t *testing.T) {
+		ctx := context.Background()
+		scheme := runtime.NewScheme()
+		require.NoError(t, corev1.AddToScheme(scheme))
+		kubeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+		cfg := &config.Config{FileConfig: config.FileConfig{
+			GangCoordination: config.GangCoordinationConfig{
+				ConfigTransport: config.GangConfigTransportPodAnnotations,
+			},
+		}}
+		ctrl := NewGangController(
+			cfg,
+			kubeClient,
+			gang.NewCoordinator(kubeClient, gang.DefaultCoordinatorConfig()),
+			newGangDiscoverer("annotation-gang", 2),
+		)
+		ctrl.RegisterPod(ctx, webhook.GangRegistration{
+			Namespace: "default",
+			PodName:   "worker-0",
+			GangID:    "annotation-gang",
+		})
+
+		var configMaps corev1.ConfigMapList
+		require.NoError(t, kubeClient.List(ctx, &configMaps, client.InNamespace("default")))
+		assert.Empty(t, configMaps.Items)
+	})
+
 	t.Run("creates skeleton ConfigMap", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -447,7 +476,6 @@ func (te *testEnv) assertNoConfigMaps(t *testing.T, ctx context.Context, namespa
 	require.NoError(t, err)
 	assert.Empty(t, cms.Items, "expected no ConfigMaps")
 }
-
 
 func newTestPod(name, namespace, ip string) *corev1.Pod {
 	return newTestPodWithGangVolume(name, namespace, ip, "")

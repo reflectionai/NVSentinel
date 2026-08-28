@@ -48,7 +48,7 @@ const (
 	// PreflightChecksAnnotation is the pod annotation listing which preflight
 	// checks to run. Value is a comma-separated list of init container names.
 	// When absent, all containers with defaultEnabled (or omitted) are injected.
-	PreflightChecksAnnotation = "nvsentinel.nvidia.com/preflight-checks"
+	PreflightChecksAnnotation = types.PreflightChecksAnnotation
 )
 
 type PatchOperation struct {
@@ -172,10 +172,49 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 	}
 
 	patches := i.patchInitContainers(pod, initContainers)
+	patches = append(patches, i.injectGangAnnotations(pod, gangCtx)...)
 	patches = append(patches, i.injectVolumes(pod, gangCtx)...)
 	patches = append(patches, i.injectImagePullSecrets(pod)...)
 
 	return patches, gangCtx, nil
+}
+
+// injectGangAnnotations adds the empty files' backing values at admission.
+// The gang controller fills them once every peer has an IP. This transport
+// avoids a kubelet ConfigMap lookup during volume setup.
+func (i *Injector) injectGangAnnotations(pod *corev1.Pod, gangCtx *GangContext) []PatchOperation {
+	if gangCtx == nil ||
+		i.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportPodAnnotations {
+		return nil
+	}
+
+	annotations := map[string]string{
+		types.GangExpectedCountAnnotation: "0",
+		types.GangPeersAnnotation:         "",
+		types.GangMasterAddrAnnotation:    "",
+		types.GangMasterPortAnnotation:    strconv.Itoa(i.cfg.GangCoordination.MasterPort),
+		types.GangIDAnnotation:            gangCtx.GangID,
+	}
+	if pod.Annotations == nil {
+		return []PatchOperation{{Op: "add", Path: "/metadata/annotations", Value: annotations}}
+	}
+
+	patches := make([]PatchOperation, 0, len(annotations))
+	for key, value := range annotations {
+		if _, exists := pod.Annotations[key]; exists {
+			continue
+		}
+		patches = append(patches, PatchOperation{
+			Op:    "add",
+			Path:  "/metadata/annotations/" + escapeJSONPointer(key),
+			Value: value,
+		})
+	}
+	return patches
+}
+
+func escapeJSONPointer(value string) string {
+	return strings.NewReplacer("~", "~0", "/", "~1").Replace(value)
 }
 
 // patchInitContainers builds JSON Patch operations to add preflight init
@@ -589,31 +628,16 @@ func (i *Injector) injectImagePullSecrets(pod *corev1.Pod) []PatchOperation {
 	return patches
 }
 
-// collectGangVolumes gathers all gang-related volumes (ConfigMap, shared memory,
-// NCCL topology, extra hostPath) that are not already present in the pod.
+// collectGangVolumes gathers all gang-related volumes (dynamic config, shared
+// memory, NCCL topology, extra hostPath) that are not already present in the pod.
 func (i *Injector) collectGangVolumes(
 	gangCtx *GangContext,
 	existingVolumes map[string]bool,
 ) []corev1.Volume {
 	var volumes []corev1.Volume
 
-	// ConfigMap is optional because it may not exist yet when the pod is created.
-	// The controller creates it when it discovers the gang.
-	// Init containers poll the mounted path until peers are registered.
 	if !existingVolumes[types.GangConfigVolumeName] {
-		optional := true
-
-		volumes = append(volumes, corev1.Volume{
-			Name: types.GangConfigVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: gangCtx.ConfigMapName,
-					},
-					Optional: &optional,
-				},
-			},
-		})
+		volumes = append(volumes, i.gangConfigVolume(gangCtx))
 	}
 
 	// Add shared memory volume for NCCL multi-GPU communication.
@@ -656,6 +680,39 @@ func (i *Injector) collectGangVolumes(
 	volumes = append(volumes, i.collectExtraHostPathVolumes(existingVolumes)...)
 
 	return volumes
+}
+
+func (i *Injector) gangConfigVolume(gangCtx *GangContext) corev1.Volume {
+	volume := corev1.Volume{Name: types.GangConfigVolumeName}
+	if i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportPodAnnotations {
+		volume.DownwardAPI = &corev1.DownwardAPIVolumeSource{
+			Items: []corev1.DownwardAPIVolumeFile{
+				downwardAPIAnnotationFile("expected_count", types.GangExpectedCountAnnotation),
+				downwardAPIAnnotationFile("peers", types.GangPeersAnnotation),
+				downwardAPIAnnotationFile("master_addr", types.GangMasterAddrAnnotation),
+				downwardAPIAnnotationFile("master_port", types.GangMasterPortAnnotation),
+				downwardAPIAnnotationFile("gang_id", types.GangIDAnnotation),
+			},
+		}
+		return volume
+	}
+
+	optional := true
+	volume.ConfigMap = &corev1.ConfigMapVolumeSource{
+		LocalObjectReference: corev1.LocalObjectReference{Name: gangCtx.ConfigMapName},
+		Optional:             &optional,
+	}
+	return volume
+}
+
+func downwardAPIAnnotationFile(path, annotation string) corev1.DownwardAPIVolumeFile {
+	return corev1.DownwardAPIVolumeFile{
+		Path: path,
+		FieldRef: &corev1.ObjectFieldSelector{
+			APIVersion: "v1",
+			FieldPath:  "metadata.annotations['" + annotation + "']",
+		},
+	}
 }
 
 // collectExtraHostPathVolumes builds volumes for configured extra hostPath mounts

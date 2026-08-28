@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestCollectMatchingEnvVars(t *testing.T) {
@@ -993,6 +994,39 @@ func TestInjectVolumes(t *testing.T) {
 		assert.Equal(t, "preflight-test", vol.ConfigMap.Name)
 	})
 
+	t.Run("gang pod annotation volume uses Downward API", func(t *testing.T) {
+		cfg := testGangConfig()
+		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportPodAnnotations
+		injector := &Injector{cfg: cfg}
+		gangCtx := &GangContext{GangID: "test", ConfigMapName: "preflight-test"}
+
+		volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, gangCtx))
+		vol := requireVolume(t, volumes, types.GangConfigVolumeName)
+		require.NotNil(t, vol.DownwardAPI)
+		assert.Nil(t, vol.ConfigMap)
+		require.Len(t, vol.DownwardAPI.Items, 5)
+		assert.Equal(t, "expected_count", vol.DownwardAPI.Items[0].Path)
+		assert.Equal(t,
+			"metadata.annotations['"+types.GangExpectedCountAnnotation+"']",
+			vol.DownwardAPI.Items[0].FieldRef.FieldPath)
+	})
+
+	t.Run("gang pod annotations retain explicit expected count", func(t *testing.T) {
+		cfg := testGangConfig()
+		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportPodAnnotations
+		injector := &Injector{cfg: cfg}
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+			types.GangExpectedCountAnnotation: "128",
+		}}}
+		patches := injector.injectGangAnnotations(pod, &GangContext{GangID: "gang"})
+
+		for _, patch := range patches {
+			assert.NotEqual(t,
+				"/metadata/annotations/"+escapeJSONPointer(types.GangExpectedCountAnnotation),
+				patch.Path)
+		}
+	})
+
 	t.Run("dshm volume specs", func(t *testing.T) {
 		injector := &Injector{cfg: testGangConfig()}
 		gangCtx := &GangContext{GangID: "test", ConfigMapName: "preflight-test"}
@@ -1204,8 +1238,8 @@ func testConfig() *config.Config {
 			GPUResourceNames:       []string{"nvidia.com/gpu"},
 			NetworkResourceNames:   []string{"vpc.amazonaws.com/efa"},
 			InitContainerPlacement: config.PlacementAppend,
-			ConnectorSocket:    "/var/run/nvsentinel/nvsentinel.sock",
-			ProcessingStrategy: "EXECUTE_REMEDIATION",
+			ConnectorSocket:        "/var/run/nvsentinel/nvsentinel.sock",
+			ProcessingStrategy:     "EXECUTE_REMEDIATION",
 		},
 	}
 }

@@ -34,6 +34,9 @@ type Config struct {
 // inserted relative to existing init containers in the pod spec.
 type InitContainerPlacement string
 
+// GangConfigTransport controls how dynamic gang configuration reaches pods.
+type GangConfigTransport string
+
 const (
 	// PlacementAppend appends preflight init containers after existing ones.
 	// This is the default and ensures provider-injected setup containers
@@ -44,6 +47,13 @@ const (
 	// Use this when preflight checks must run before other init containers,
 	// for example to gate workload setup on GPU health validation.
 	PlacementPrepend InitContainerPlacement = "prepend"
+
+	// GangConfigTransportConfigMap mounts a controller-managed ConfigMap.
+	GangConfigTransportConfigMap GangConfigTransport = "configMap"
+
+	// GangConfigTransportPodAnnotations projects controller-written pod
+	// annotations through a kubelet-local Downward API volume.
+	GangConfigTransportPodAnnotations GangConfigTransport = "podAnnotations"
 )
 
 // InitContainerSpec wraps corev1.Container with a DefaultEnabled field
@@ -135,6 +145,11 @@ type GVRConfig struct {
 type GangCoordinationConfig struct {
 	// Enabled enables gang coordination for multi-node checks.
 	Enabled bool `yaml:"enabled"`
+
+	// ConfigTransport selects how the controller delivers dynamic gang data
+	// to init containers. Supported values are "configMap" and
+	// "podAnnotations". Default: configMap.
+	ConfigTransport GangConfigTransport `yaml:"configTransport,omitempty"`
 
 	// Timeout is the maximum time to wait for all gang members to register.
 	// Accepts duration strings like "10m", "5m30s", etc.
@@ -265,6 +280,10 @@ func (c *GangCoordinationConfig) setDefaults() {
 		c.Timeout = "10m"
 	}
 
+	if c.ConfigTransport == "" {
+		c.ConfigTransport = GangConfigTransportConfigMap
+	}
+
 	if c.MasterPort == 0 {
 		c.MasterPort = 29500
 	}
@@ -318,6 +337,16 @@ func (c *FileConfig) validate() error {
 	}
 
 	if c.GangCoordination.Enabled {
+		switch c.GangCoordination.ConfigTransport {
+		case GangConfigTransportConfigMap, GangConfigTransportPodAnnotations:
+		default:
+			return fmt.Errorf(
+				"invalid gangCoordination.configTransport %q: must be %q or %q",
+				c.GangCoordination.ConfigTransport,
+				GangConfigTransportConfigMap,
+				GangConfigTransportPodAnnotations)
+		}
+
 		timeout, err := time.ParseDuration(c.GangCoordination.Timeout)
 		if err != nil {
 			return fmt.Errorf("invalid gangCoordination.timeout %q: %w", c.GangCoordination.Timeout, err)

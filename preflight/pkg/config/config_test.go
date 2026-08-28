@@ -64,10 +64,39 @@ gangCoordination:
 
 		assert.True(t, cfg.GangCoordination.Enabled)
 		assert.Equal(t, 10*time.Minute, cfg.GangCoordination.TimeoutDuration)
+		assert.Equal(t, GangConfigTransportConfigMap, cfg.GangCoordination.ConfigTransport)
 		assert.Equal(t, 29500, cfg.GangCoordination.MasterPort)
 		assert.Equal(t, "/etc/preflight", cfg.GangCoordination.ConfigMapMountPath)
 		require.NotNil(t, cfg.GangCoordination.MirrorResourceClaims)
 		assert.True(t, *cfg.GangCoordination.MirrorResourceClaims)
+	})
+
+	t.Run("gang pod annotation transport", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-nccl-allreduce
+    image: nccl:latest
+gangCoordination:
+  enabled: true
+  configTransport: podAnnotations
+`)
+		cfg, err := Load(path)
+		require.NoError(t, err)
+		assert.Equal(t, GangConfigTransportPodAnnotations, cfg.GangCoordination.ConfigTransport)
+	})
+
+	t.Run("gang invalid config transport", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-nccl-allreduce
+    image: nccl:latest
+gangCoordination:
+  enabled: true
+  configTransport: secret
+`)
+		_, err := Load(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "configTransport")
 	})
 
 	t.Run("gang custom values", func(t *testing.T) {
