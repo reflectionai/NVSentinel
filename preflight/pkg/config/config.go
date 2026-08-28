@@ -34,7 +34,7 @@ type Config struct {
 // inserted relative to existing init containers in the pod spec.
 type InitContainerPlacement string
 
-// GangConfigTransport controls how dynamic gang configuration reaches pods.
+// GangConfigTransport controls how gang bootstrap configuration reaches pods.
 type GangConfigTransport string
 
 const (
@@ -51,9 +51,10 @@ const (
 	// GangConfigTransportConfigMap mounts a controller-managed ConfigMap.
 	GangConfigTransportConfigMap GangConfigTransport = "configMap"
 
-	// GangConfigTransportPodAnnotations projects controller-written pod
-	// annotations through a kubelet-local Downward API volume.
-	GangConfigTransportPodAnnotations GangConfigTransport = "podAnnotations"
+	// GangConfigTransportStaticEnv reuses torchrun's static rendezvous
+	// environment from the workload's main container. No gang ConfigMap is
+	// created or mounted.
+	GangConfigTransportStaticEnv GangConfigTransport = "staticEnv"
 )
 
 // InitContainerSpec wraps corev1.Container with a DefaultEnabled field
@@ -149,9 +150,8 @@ type GangCoordinationConfig struct {
 	// Enabled enables gang coordination for multi-node checks.
 	Enabled bool `yaml:"enabled"`
 
-	// ConfigTransport selects how the controller delivers dynamic gang data
-	// to init containers. Supported values are "configMap" and
-	// "podAnnotations". Default: configMap.
+	// ConfigTransport selects how init containers receive gang bootstrap data.
+	// Supported values are "configMap" and "staticEnv". Default: configMap.
 	ConfigTransport GangConfigTransport `yaml:"configTransport,omitempty"`
 
 	// Timeout is the maximum time to wait for all gang members to register.
@@ -341,13 +341,13 @@ func (c *FileConfig) validate() error {
 
 	if c.GangCoordination.Enabled {
 		switch c.GangCoordination.ConfigTransport {
-		case GangConfigTransportConfigMap, GangConfigTransportPodAnnotations:
+		case GangConfigTransportConfigMap, GangConfigTransportStaticEnv:
 		default:
 			return fmt.Errorf(
 				"invalid gangCoordination.configTransport %q: must be %q or %q",
 				c.GangCoordination.ConfigTransport,
 				GangConfigTransportConfigMap,
-				GangConfigTransportPodAnnotations)
+				GangConfigTransportStaticEnv)
 		}
 
 		timeout, err := time.ParseDuration(c.GangCoordination.Timeout)

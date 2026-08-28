@@ -1733,11 +1733,12 @@ preflight:
   ##############################################################################
   # GANG COORDINATION
   #
-  # Manages dynamic configuration for multi-node init container coordination.
+  # Manages bootstrap configuration for multi-node init container coordination.
   # Required for nccl-allreduce. See: docs/configuration/preflight.md
   ##############################################################################
   gangCoordination:
-    # Dynamic gang-data delivery: configMap or podAnnotations.
+    # Gang bootstrap delivery: configMap or staticEnv. staticEnv copies the
+    # workload's explicit torchrun environment and creates no gang ConfigMap.
     configTransport: "configMap"
     # Enable gang coordination (required for gang-wide checks)
     enabled: true
@@ -1745,7 +1746,7 @@ preflight:
     timeout: "10m"
     # Port for PyTorch distributed TCP bootstrap (torchrun)
     masterPort: 29500
-    # Path where gang configuration is mounted in init containers
+    # Path where gang ConfigMaps are mounted in init containers
     configMapMountPath: "/etc/preflight"
     # NCCL topology ConfigMap name - required for Azure InfiniBand (NDv4/v5)
     # Without this, NCCL cannot map GPUs to IB HCAs and falls back to TCP.

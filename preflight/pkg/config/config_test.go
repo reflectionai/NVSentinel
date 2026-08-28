@@ -85,18 +85,18 @@ gangCoordination:
 		assert.True(t, *cfg.GangCoordination.MirrorResourceClaims)
 	})
 
-	t.Run("gang pod annotation transport", func(t *testing.T) {
+	t.Run("gang static environment transport", func(t *testing.T) {
 		path := writeYAML(t, `
 initContainers:
   - name: preflight-nccl-allreduce
     image: nccl:latest
 gangCoordination:
   enabled: true
-  configTransport: podAnnotations
+  configTransport: staticEnv
 `)
 		cfg, err := Load(path)
 		require.NoError(t, err)
-		assert.Equal(t, GangConfigTransportPodAnnotations, cfg.GangCoordination.ConfigTransport)
+		assert.Equal(t, GangConfigTransportStaticEnv, cfg.GangCoordination.ConfigTransport)
 	})
 
 	t.Run("gang invalid config transport", func(t *testing.T) {

@@ -15,3 +15,11 @@ tests:
       - matchRegex:
           path: data["config.yaml"]
           pattern: "ignoreUnknownChecks: true"
+
+  - it: should pass gang config transport to the webhook
+    set:
+      gangCoordination.configTransport: staticEnv
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'configTransport: "staticEnv"'

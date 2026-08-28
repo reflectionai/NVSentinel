@@ -132,7 +132,7 @@ func TestGangController_TerminatingPodSkipped(t *testing.T) {
 }
 
 func TestGangController_WebhookRegistration(t *testing.T) {
-	t.Run("pod annotation transport creates no gang ConfigMap", func(t *testing.T) {
+	t.Run("static environment transport creates no gang ConfigMap", func(t *testing.T) {
 		ctx := context.Background()
 		scheme := runtime.NewScheme()
 		require.NoError(t, corev1.AddToScheme(scheme))
@@ -140,19 +140,19 @@ func TestGangController_WebhookRegistration(t *testing.T) {
 
 		cfg := &config.Config{FileConfig: config.FileConfig{
 			GangCoordination: config.GangCoordinationConfig{
-				ConfigTransport: config.GangConfigTransportPodAnnotations,
+				ConfigTransport: config.GangConfigTransportStaticEnv,
 			},
 		}}
 		ctrl := NewGangController(
 			cfg,
 			kubeClient,
 			gang.NewCoordinator(kubeClient, gang.DefaultCoordinatorConfig()),
-			newGangDiscoverer("annotation-gang", 2),
+			newGangDiscoverer("static-gang", 2),
 		)
 		ctrl.RegisterPod(ctx, webhook.GangRegistration{
 			Namespace: "default",
 			PodName:   "worker-0",
-			GangID:    "annotation-gang",
+			GangID:    "static-gang",
 		})
 
 		var configMaps corev1.ConfigMapList

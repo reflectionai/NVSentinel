@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/nvidia/nvsentinel/preflight/pkg/config"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
@@ -147,35 +146,15 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, nil
 	}
 
-	// Build check names in chart order — same logic as the injector's
-	// selectInitContainers so both paths produce identical strings.
-	checkNames := checkNamesFromPod(&pod, c.cfg)
-	if c.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportPodAnnotations {
-		for idx := range gangInfo.Peers {
-			gangInfo.Peers[idx].CheckNames = configuredCheckNames(
-				gangInfo.Peers[idx].CheckNames, c.cfg)
-		}
-		ready, err := c.coordinator.PublishPodAnnotations(ctx, &pod, gangInfo, checkNames)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if !ready {
-			return ctrl.Result{RequeueAfter: time.Second}, nil
-		}
-
-		slog.Info("Published gang snapshot to pod annotations",
-			"pod", pod.Name,
-			"namespace", pod.Namespace,
-			"gangID", gangID,
-			"podIP", pod.Status.PodIP)
-		return ctrl.Result{}, nil
-	}
-
 	// The webhook may have used a different gang ID (e.g., from a label
 	// fallback) than the one the controller discovers from the scheduler
 	// annotation. We must update the ConfigMap the webhook mounted, not
 	// create a new one derived from the controller's gang ID.
 	webhookCM := webhookConfigMapName(&pod)
+
+	// Build check names in chart order — same logic as the injector's
+	// selectInitContainers so both paths produce identical strings.
+	checkNames := checkNamesFromPod(&pod, c.cfg)
 
 	peer := gang.PeerInfo{
 		PodName:    pod.Name,
@@ -209,13 +188,15 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 // RegisterPod is called by the webhook when a pod is admitted that belongs to a gang.
+// For ConfigMap transport, it creates the ConfigMap immediately so schedulers
+// (like KAI) that validate ConfigMap existence before scheduling won't block.
 func (c *GangController) RegisterPod(ctx context.Context, reg webhook.GangRegistration) {
 	if reg.GangID == "" {
 		slog.Info("Gang ID is empty", "namespace", reg.Namespace, "pod", reg.PodName)
 		return
 	}
 
-	if c.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportPodAnnotations {
+	if c.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportStaticEnv {
 		// Create the ConfigMap immediately (with an empty peer list). KAI
 		// validates even optional ConfigMap volumes before scheduling.
 		// https://github.com/NVIDIA/KAI-Scheduler/issues/988
@@ -346,30 +327,23 @@ func (c *GangController) deleteOrphanedConfigMap(ctx context.Context, namespace,
 func checkNamesFromPod(pod *corev1.Pod, cfg *config.Config) string {
 	ann, ok := pod.Annotations[webhook.PreflightChecksAnnotation]
 	if !ok {
-		return configuredCheckNames("", cfg)
-	}
-	return configuredCheckNames(ann, cfg)
-}
-
-// configuredCheckNames reduces a requested check annotation to what this
-// webhook actually injected. An empty value denotes an absent annotation and
-// therefore selects default-enabled checks; gang discovery never includes a
-// pod whose explicitly empty selection injected no gang volume.
-func configuredCheckNames(annotation string, cfg *config.Config) string {
-	if annotation == "" {
+		// No annotation — use defaultEnabled in chart order.
 		var names []string
+
 		for _, spec := range cfg.InitContainers {
 			if spec.IsDefaultEnabled() {
 				names = append(names, spec.Name)
 			}
 		}
+
 		return strings.Join(names, ",")
 	}
 
 	// Annotation present — use annotation order, skip unknown names.
-	parsed, err := webhook.ParseCheckNames(annotation)
+	parsed, err := webhook.ParseCheckNames(ann)
 	if err != nil {
-		slog.Warn("Failed to parse preflight-checks annotation", "error", err)
+		slog.Warn("Failed to parse preflight-checks annotation",
+			"pod", pod.Name, "error", err)
 
 		return ""
 	}

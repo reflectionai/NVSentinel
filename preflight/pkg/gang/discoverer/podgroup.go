@@ -41,7 +41,7 @@ const batchJobNameLabel = "batch.kubernetes.io/job-name"
 // record those sources can read (e.g. RayCluster workers, which have no
 // owning Job and, on schedulers like reflection-scheduler, no PodGroup CR),
 // and unlike a census of live pods it is stable from the first reconcile.
-const ExpectedCountAnnotation = types.GangExpectedCountAnnotation
+const ExpectedCountAnnotation = "nvsentinel.nvidia.com/preflight-gang-expected-count"
 
 // PodGroupConfig defines the configuration for a PodGroup-based gang discoverer.
 type PodGroupConfig struct {
@@ -216,11 +216,10 @@ func (d *PodGroupDiscoverer) DiscoverPeers(ctx context.Context, pod *corev1.Pod)
 		}
 
 		peers = append(peers, types.PeerInfo{
-			PodName:    p.Name,
-			PodIP:      p.Status.PodIP,
-			NodeName:   p.Spec.NodeName,
-			Namespace:  p.Namespace,
-			CheckNames: p.Annotations[types.PreflightChecksAnnotation],
+			PodName:   p.Name,
+			PodIP:     p.Status.PodIP,
+			NodeName:  p.Spec.NodeName,
+			Namespace: p.Namespace,
 		})
 	}
 

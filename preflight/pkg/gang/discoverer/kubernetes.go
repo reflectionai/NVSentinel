@@ -189,11 +189,10 @@ func (w *WorkloadRefDiscoverer) findPeers(
 		}
 
 		peers = append(peers, types.PeerInfo{
-			PodName:    p.Name,
-			PodIP:      p.Status.PodIP,
-			NodeName:   p.Spec.NodeName,
-			Namespace:  p.Namespace,
-			CheckNames: p.Annotations[types.PreflightChecksAnnotation],
+			PodName:   p.Name,
+			PodIP:     p.Status.PodIP,
+			NodeName:  p.Spec.NodeName,
+			Namespace: p.Namespace,
 		})
 	}
 

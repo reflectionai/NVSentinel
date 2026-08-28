@@ -258,9 +258,7 @@ Here membership is determined by a pod label instead of an annotation. The rest 
 ## Gang coordination
 
 When `gangCoordination.enabled` is true (default in the preflight chart), the
-controller coordinates multi-node checks through one of two transports. Both
-expose the same files at `gangCoordination.configMapMountPath` (default
-`/etc/preflight`), so check images are transport-independent.
+webhook can bootstrap multi-node checks through one of two transports.
 
 With the default `configTransport: configMap`:
 
@@ -268,17 +266,18 @@ With the default `configTransport: configMap`:
 2. As pods become ready the gang controller populates the ConfigMap with peer information (IP, rank).
 3. Init containers read the ConfigMap at `gangCoordination.configMapMountPath` (default `/etc/preflight`) to discover the master address and peer list.
 
-With `configTransport: podAnnotations`:
+With `configTransport: staticEnv`:
 
-1. At admission time the webhook injects a Downward API volume backed by gang annotations on the pod. Volume setup is kubelet-local and does not fetch a ConfigMap.
-2. The controller waits until the authoritative expected peer count has an IP, then writes one canonical snapshot to each member pod's annotations.
-3. Kubelet projects those annotations as the same files read by the init containers.
+1. The workload's main container must explicitly define literal `MASTER_ADDR`, `MASTER_PORT`, and `WORLD_SIZE` values plus a literal or Downward API `NODE_RANK`. `MASTER` and `NUM_NODES` are copied when present.
+2. At admission time the webhook copies those environment entries, including `valueFrom` sources, into each selected gang init container and adds `GANG_CONFIG_TRANSPORT=staticEnv`.
+3. The webhook creates and mounts no gang ConfigMap, and the gang controller does not publish a peer roster. The check image derives any required roster from the workload's static rendezvous contract.
 
-Use the pod-annotation transport only when workloads stamp
-`nvsentinel.nvidia.com/preflight-gang-expected-count`; an authoritative count
-prevents a partially created gang from forming early.
+Use `staticEnv` only for workloads whose pod DNS names and torchrun environment
+provide a deterministic rank-to-address mapping understood by the selected
+check image. The webhook rejects gang injection when a required environment
+entry is missing.
 
-The mounted directory contains:
+The ConfigMap transport's mounted directory contains:
 
 | Key | Value |
 |-----|-------|
@@ -288,16 +287,16 @@ The mounted directory contains:
 | `master_port` | Port for PyTorch distributed TCP bootstrap (default `29500`) |
 | `gang_id` | Unique gang identifier (discoverer prefix + namespace + group) |
 
-Under the ConfigMap transport, objects are labeled
-`nvsentinel.nvidia.com/managed-by: preflight` and named with a `preflight-`
-prefix. The pod-annotation transport creates no gang ConfigMaps.
+ConfigMaps are labeled `nvsentinel.nvidia.com/managed-by: preflight` and named
+with a `preflight-` prefix. The static environment transport creates no gang
+ConfigMaps.
 
 ### Key `gangCoordination` values
 
 ```yaml
 gangCoordination:
   enabled: true
-  configTransport: "configMap" # Or "podAnnotations"
+  configTransport: "configMap" # Or "staticEnv"
   timeout: "10m"            # Max wait for all members to register
   masterPort: 29500         # PyTorch distributed bootstrap port
   configMapMountPath: "/etc/preflight"

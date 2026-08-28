@@ -21,29 +21,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-const (
-	// GangConfigVolumeName is the volume name injected by the webhook for gang
-	// coordination. The controller uses this to identify participating pods.
-	GangConfigVolumeName = "nvsentinel-preflight-gang-config"
-
-	// GangExpectedCountAnnotation is the authoritative expected peer count.
-	GangExpectedCountAnnotation = "nvsentinel.nvidia.com/preflight-gang-expected-count"
-
-	// GangPeersAnnotation is the rank-ordered, newline-delimited peer list.
-	GangPeersAnnotation = "nvsentinel.nvidia.com/preflight-gang-peers"
-
-	// GangMasterAddrAnnotation is the rank-zero pod IP.
-	GangMasterAddrAnnotation = "nvsentinel.nvidia.com/preflight-gang-master-addr"
-
-	// GangMasterPortAnnotation is the distributed bootstrap port.
-	GangMasterPortAnnotation = "nvsentinel.nvidia.com/preflight-gang-master-port"
-
-	// GangIDAnnotation is the unsanitized gang identifier.
-	GangIDAnnotation = "nvsentinel.nvidia.com/preflight-gang-id"
-
-	// PreflightChecksAnnotation lists the checks selected for one pod.
-	PreflightChecksAnnotation = "nvsentinel.nvidia.com/preflight-checks"
-)
+// GangConfigVolumeName is the volume name injected by the webhook for gang coordination.
+// The controller uses this to identify pods that belong to a gang.
+const GangConfigVolumeName = "nvsentinel-preflight-gang-config"
 
 // PeerFilter determines whether a discovered pod should be included as a
 // gang peer. When set on a discoverer, pods that fail the filter are excluded
@@ -53,7 +33,7 @@ const (
 type PeerFilter func(pod *corev1.Pod) bool
 
 // HasGangConfigVolume returns true if the pod has the gang coordination
-// volume (injected by the webhook for pods with GPU resources).
+// ConfigMap volume (injected by the webhook for pods with GPU resources).
 // This is the standard PeerFilter: only pods with preflight init containers
 // should participate in gang coordination.
 func HasGangConfigVolume(pod *corev1.Pod) bool {
