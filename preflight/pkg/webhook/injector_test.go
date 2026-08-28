@@ -469,6 +469,23 @@ func TestInjectInitContainers(t *testing.T) {
 			},
 		},
 		{
+			name: "only ignored unknown checks produce no patch",
+			cfg: func() *config.Config {
+				cfg := testConfig()
+				cfg.IgnoreUnknownChecks = true
+				return cfg
+			}(),
+			pod: func() *corev1.Pod {
+				p := gpuPod()
+				p.Annotations = map[string]string{
+					PreflightChecksAnnotation: "preflight-nccl-loopback,preflight-nccl-allreduce",
+				}
+				return p
+			}(),
+			expectPatches: false,
+			expectGangCtx: false,
+		},
+		{
 			name: "unknown check name returns error",
 			cfg:  testConfig(),
 			pod: func() *corev1.Pod {
@@ -852,6 +869,35 @@ func TestSelectInitContainers(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "bogus-check")
 		assert.Contains(t, err.Error(), "unknown checks")
+	})
+
+	t.Run("unknown check names can be ignored", func(t *testing.T) {
+		cfg := multiConfig()
+		cfg.IgnoreUnknownChecks = true
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "preflight-dcgm-diag,bogus-check",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		require.Len(t, selected, 1)
+		assert.Equal(t, "preflight-dcgm-diag", selected[0].Name)
+	})
+
+	t.Run("only unknown check names select no containers when ignored", func(t *testing.T) {
+		cfg := multiConfig()
+		cfg.IgnoreUnknownChecks = true
+		injector := NewInjector(cfg, nil)
+		pod := gpuPod()
+		pod.Annotations = map[string]string{
+			PreflightChecksAnnotation: "bogus-check,another-bogus-check",
+		}
+
+		selected, err := injector.selectInitContainers(pod)
+		require.NoError(t, err)
+		assert.Empty(t, selected)
 	})
 
 	t.Run("annotation order controls injection order", func(t *testing.T) {

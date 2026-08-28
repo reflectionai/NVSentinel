@@ -28,7 +28,7 @@ metadata:
     nvsentinel.nvidia.com/preflight-checks: "preflight-dcgm-diag,preflight-nccl-loopback"
 ```
 
-Only named containers are injected, in the order they appear in the annotation. When no annotation is present, chart order is used. Duplicate or unknown names reject admission with an error. An empty value disables all checks:
+Only named containers are injected, in the order they appear in the annotation. When no annotation is present, chart order is used. Duplicate names reject admission. Unknown names reject admission by default; `ignoreUnknownChecks: true` instead omits unknown names while retaining requested checks configured on the cluster. An empty value disables all checks:
 
 ```yaml
 nvsentinel.nvidia.com/preflight-checks: ""
@@ -168,13 +168,13 @@ Before launching torchrun, the NCCL all-reduce init container calls `validate_pe
 ### Negative
 
 - Annotation cannot override env vars (e.g., DCGM diag level) — that stays in `values.yaml` or on the init container spec
-- Annotation is free-form text, though typos in container names are caught — admission is rejected with an error listing the unknown names and the available checks
+- Annotation is free-form text. Strict mode catches typos by rejecting admission with an error listing the unknown names and available checks; clusters that opt into ignoring unknown checks trade that typo detection for compatibility with broader workload policies.
 - An empty annotation disables all checks, which may be surprising if set accidentally
 
 ### Mitigations
 
 - Env var overrides can be addressed separately if needed; the annotation mechanism is orthogonal
-- Unknown container names reject admission with an error listing the invalid names and configured checks
+- Unknown container names reject admission by default. Enable `ignoreUnknownChecks` only when workloads legitimately request checks unavailable on the cluster.
 
 ## Alternatives Considered
 

@@ -13,6 +13,12 @@
           "enum": ["cert-manager", "openshift-service-ca"]
         }
       }
+    },
+    "ignoreUnknownChecks": {
+      "type": "boolean",
+      "title": "Ignore unknown requested preflight checks",
+      "description": "Omit check names requested by pod annotations but absent from initContainers instead of rejecting admission",
+      "default": false
     }
   }
 }

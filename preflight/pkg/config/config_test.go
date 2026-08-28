@@ -49,6 +49,20 @@ initContainers:
 		assert.Equal(t, "EXECUTE_REMEDIATION", cfg.ProcessingStrategy)
 		assert.Len(t, cfg.InitContainers, 1)
 		assert.Equal(t, "preflight-dcgm-diag", cfg.InitContainers[0].Name)
+		assert.False(t, cfg.IgnoreUnknownChecks)
+	})
+
+	t.Run("ignore unknown checks can be enabled", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-sdc-replay
+    image: sdc:latest
+ignoreUnknownChecks: true
+`)
+		cfg, err := Load(path)
+		require.NoError(t, err)
+
+		assert.True(t, cfg.IgnoreUnknownChecks)
 	})
 
 	t.Run("gang enabled defaults", func(t *testing.T) {

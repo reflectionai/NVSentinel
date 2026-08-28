@@ -29,6 +29,11 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Read the owning RayCluster's sticky provisioned condition for opt-in jobs.
+  - apiGroups: ["ray.io"]
+    resources: ["rayclusters"]
+    verbs: ["get"]
   
   # Gang discovery API - dynamically generated based on gangDiscovery config
   {{- if .Values.gangDiscovery.podGroupGVR }}

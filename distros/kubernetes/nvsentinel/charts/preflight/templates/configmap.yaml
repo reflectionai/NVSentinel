@@ -74,6 +74,7 @@ data:
     {{- if .Values.initContainerPlacement }}
     initContainerPlacement: {{ .Values.initContainerPlacement | quote }}
     {{- end }}
+    ignoreUnknownChecks: {{ .Values.ignoreUnknownChecks }}
     {{- if .Values.injectedImagePullSecrets }}
     imagePullSecrets:
       {{- toYaml .Values.injectedImagePullSecrets | nindent 6 }}
