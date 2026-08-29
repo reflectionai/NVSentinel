@@ -291,18 +291,25 @@ func TestInjectInitContainers(t *testing.T) {
 			},
 		},
 		{
-			name: "TCPStore gang environment is copied without a config volume",
+			name: "TCPStore DeepEP is injected without a config volume",
 			cfg: func() *config.Config {
 				cfg := testGangConfig()
 				cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
+				cfg.InitContainers[0].Name = "preflight-deepep"
 				return cfg
 			}(),
-			discoverer:       &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
-			pod:              staticGangPod(),
+			discoverer: &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
+			pod: func() *corev1.Pod {
+				pod := staticGangPod()
+				pod.Annotations = map[string]string{
+					PreflightChecksAnnotation: "preflight-deepep",
+				}
+				return pod
+			}(),
 			expectPatches:    true,
 			expectGangCtx:    true,
 			expectGangID:     "test-gang",
-			expectCheckNames: "preflight-dcgm-diag",
+			expectCheckNames: "preflight-deepep",
 			validatePatches: func(t *testing.T, patches []PatchOperation) {
 				t.Helper()
 				initPatch := findPatchByPath(patches, "/spec/initContainers")
@@ -312,7 +319,11 @@ func TestInjectInitContainers(t *testing.T) {
 				require.Len(t, containers, 1)
 				assert.Equal(t, "tcpStore", findEnv(containers[0].Env, gangTransportEnv))
 				assert.Equal(t, "28000", findEnv(containers[0].Env, "GANG_TCPSTORE_PORT"))
-				assert.Equal(t, "preflight-dcgm-diag", findEnv(containers[0].Env, "GANG_RENDEZVOUS_ID"))
+				assert.Equal(t, "preflight-deepep", findEnv(containers[0].Env, "GANG_RENDEZVOUS_ID"))
+				podName := findEnvVar(t, containers[0].Env, "POD_NAME")
+				require.NotNil(t, podName.ValueFrom)
+				require.NotNil(t, podName.ValueFrom.FieldRef)
+				assert.Equal(t, "metadata.name", podName.ValueFrom.FieldRef.FieldPath)
 				assert.False(t, hasEnvVar(containers[0], "GANG_CONFIG_DIR"))
 				assert.False(t, hasVolumeMount(containers[0], types.GangConfigVolumeName))
 				for _, volume := range extractVolumes(t, patches) {
@@ -767,6 +778,57 @@ func TestBuildInitContainers(t *testing.T) {
 		require.NotNil(t, findEnvVar(t, env, "NODE_RANK").ValueFrom)
 		assert.False(t, hasEnvVar(containers[0], "GANG_CONFIG_DIR"))
 		assert.False(t, hasVolumeMount(containers[0], types.GangConfigVolumeName))
+	})
+
+	t.Run("TCPStore protocol env overrides template collisions", func(t *testing.T) {
+		cfg := testGangConfig()
+		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
+		cfg.InitContainers[0].Env = []corev1.EnvVar{
+			{Name: "GANG_CONFIG_DIR", Value: "/stale"},
+			{Name: gangTransportEnv, Value: "stale"},
+			{Name: "GANG_ID", Value: "stale"},
+			{Name: "GANG_RENDEZVOUS_ID", Value: "stale"},
+			{Name: "GANG_TCPSTORE_PORT", Value: "1"},
+			{Name: "GANG_TIMEOUT_SECONDS", Value: "1"},
+			{Name: "MASTER", Value: "stale"},
+			{Name: "MASTER_ADDR", Value: "stale"},
+			{Name: "MASTER_PORT", Value: "1"},
+			{Name: "NODE_RANK", Value: "99"},
+			{Name: "NUM_NODES", Value: "99"},
+			{Name: "POD_IP", Value: "stale"},
+			{Name: "POD_NAME", Value: "stale"},
+			{Name: "WORLD_SIZE", Value: "99"},
+		}
+		injector := NewInjector(cfg, nil)
+		gangCtx := &GangContext{GangID: "test-gang", ConfigMapName: "preflight-test-gang"}
+
+		containers := injector.buildInitContainers(staticGangPod(), corev1.ResourceList{
+			"nvidia.com/gpu": resource.MustParse("8"),
+		}, gangCtx, cfg.InitContainers)
+
+		require.Len(t, containers, 1)
+		env := containers[0].Env
+		assert.Equal(t, "tcpStore", findEnv(env, gangTransportEnv))
+		assert.Equal(t, "test-gang", findEnv(env, "GANG_ID"))
+		assert.Equal(t, "preflight-dcgm-diag", findEnv(env, "GANG_RENDEZVOUS_ID"))
+		assert.Equal(t, "28000", findEnv(env, "GANG_TCPSTORE_PORT"))
+		assert.Equal(t, "600", findEnv(env, "GANG_TIMEOUT_SECONDS"))
+		assert.Equal(t, "train-0.train.default.svc.cluster.local", findEnv(env, "MASTER"))
+		assert.Equal(t, "train-0.train.default.svc.cluster.local", findEnv(env, "MASTER_ADDR"))
+		assert.Equal(t, "29400", findEnv(env, "MASTER_PORT"))
+		assert.Equal(t, "128", findEnv(env, "NUM_NODES"))
+		assert.Equal(t, "128", findEnv(env, "WORLD_SIZE"))
+		assert.Equal(t,
+			"metadata.labels['batch.kubernetes.io/job-completion-index']",
+			findEnvVar(t, env, "NODE_RANK").ValueFrom.FieldRef.FieldPath)
+		assert.Equal(t, "metadata.name", findEnvVar(t, env, "POD_NAME").ValueFrom.FieldRef.FieldPath)
+		assert.Equal(t, "status.podIP", findEnvVar(t, env, "POD_IP").ValueFrom.FieldRef.FieldPath)
+		assert.False(t, hasEnvVar(containers[0], "GANG_CONFIG_DIR"))
+		for _, name := range tcpStoreReservedEnvNames {
+			if name != "GANG_CONFIG_DIR" {
+				assert.Equal(t, 1, countNamedEnvVars(env, name), name)
+			}
+		}
 	})
 
 	t.Run("TCPStore gang ports are distinct per check", func(t *testing.T) {
@@ -1417,6 +1479,16 @@ func hasNamedEnvVar(envs []corev1.EnvVar, name string) bool {
 		}
 	}
 	return false
+}
+
+func countNamedEnvVars(envs []corev1.EnvVar, name string) int {
+	count := 0
+	for _, env := range envs {
+		if env.Name == name {
+			count++
+		}
+	}
+	return count
 }
 
 type mockDiscoverer struct {

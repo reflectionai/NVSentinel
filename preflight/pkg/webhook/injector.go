@@ -62,6 +62,23 @@ var torchrunGangEnvNames = []string{
 	"WORLD_SIZE",
 }
 
+var tcpStoreReservedEnvNames = []string{
+	"GANG_CONFIG_DIR",
+	gangTransportEnv,
+	"GANG_ID",
+	"GANG_RENDEZVOUS_ID",
+	"GANG_TCPSTORE_PORT",
+	"GANG_TIMEOUT_SECONDS",
+	"MASTER",
+	"MASTER_ADDR",
+	"MASTER_PORT",
+	"NODE_RANK",
+	"NUM_NODES",
+	"POD_IP",
+	"POD_NAME",
+	"WORLD_SIZE",
+}
+
 type PatchOperation struct {
 	Op    string `json:"op"`
 	Path  string `json:"path"`
@@ -390,15 +407,16 @@ func (i *Injector) buildInitContainers(
 		}
 
 		i.injectCommonEnv(container)
-		i.injectGangEnv(container, gangCtx, checkIndexByName[container.Name])
-		if gangCtx != nil &&
-			i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
-			i.mergeEnvVars(container, torchrunGangEnvVars)
-		}
 
 		// Copy matching env vars from user containers (lower precedence
 		// than the init container's own env vars — only adds new names).
 		i.mergeEnvVars(container, userEnvVars)
+
+		i.injectGangEnv(container, gangCtx, checkIndexByName[container.Name])
+		if gangCtx != nil &&
+			i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
+			i.replaceEnvVars(container, torchrunGangEnvNames, torchrunGangEnvVars)
+		}
 
 		// Copy matching volume mounts from user containers.
 		i.mergeVolumeMounts(container, userVolumeMounts)
@@ -799,7 +817,16 @@ func (i *Injector) injectGangEnv(
 		)
 	}
 
-	i.mergeEnvVars(container, envVars)
+	if i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
+		i.replaceEnvVars(container, tcpStoreReservedEnvNames, envVars)
+		return
+	}
+
+	reservedNames := make([]string, 0, len(envVars))
+	for _, env := range envVars {
+		reservedNames = append(reservedNames, env.Name)
+	}
+	i.replaceEnvVars(container, reservedNames, envVars)
 }
 
 // collectTorchrunGangEnvVars copies torchrun's static identity contract from
@@ -874,6 +901,26 @@ func (i *Injector) mergeEnvVars(container *corev1.Container, envVars []corev1.En
 			container.Env = append(container.Env, env)
 		}
 	}
+}
+
+// replaceEnvVars removes every reserved name and appends authoritative values.
+func (i *Injector) replaceEnvVars(
+	container *corev1.Container,
+	reservedNames []string,
+	envVars []corev1.EnvVar,
+) {
+	reserved := make(map[string]bool, len(reservedNames))
+	for _, name := range reservedNames {
+		reserved[name] = true
+	}
+
+	retained := make([]corev1.EnvVar, 0, len(container.Env)+len(envVars))
+	for _, env := range container.Env {
+		if !reserved[env.Name] {
+			retained = append(retained, env)
+		}
+	}
+	container.Env = append(retained, envVars...)
 }
 
 // collectMatchingEnvVars scans all containers for env vars whose names match
