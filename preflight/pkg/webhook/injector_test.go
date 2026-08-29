@@ -54,6 +54,61 @@ func TestCollectMatchingEnvVars(t *testing.T) {
 	assert.Equal(t, "", findEnv(result, "HOME"))
 }
 
+func TestCollectTorchrunGangEnvVars(t *testing.T) {
+	injector := &Injector{cfg: testGangConfig()}
+	rankSource := &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{
+		FieldPath: "metadata.labels['batch.kubernetes.io/job-completion-index']",
+	}}
+	containers := []corev1.Container{
+		{Env: []corev1.EnvVar{
+			{Name: "MASTER_ADDR", Value: "train-0.train.default.svc.cluster.local"},
+			{Name: "MASTER_PORT", Value: "29400"},
+			{Name: "WORLD_SIZE", Value: "128"},
+			{Name: "NODE_RANK", ValueFrom: rankSource},
+			{Name: "IGNORED", Value: "value"},
+		}},
+		{Env: []corev1.EnvVar{
+			{Name: "WORLD_SIZE", Value: "wrong-duplicate"},
+		}},
+	}
+
+	result := injector.collectTorchrunGangEnvVars(containers)
+
+	require.NoError(t, validateTCPStoreGangEnv(result))
+	assert.Equal(t, "train-0.train.default.svc.cluster.local", findEnv(result, "MASTER_ADDR"))
+	assert.Equal(t, "29400", findEnv(result, "MASTER_PORT"))
+	assert.Equal(t, "128", findEnv(result, "WORLD_SIZE"))
+	assert.Equal(t, rankSource, findEnvVar(t, result, "NODE_RANK").ValueFrom)
+	assert.False(t, hasNamedEnvVar(result, "IGNORED"))
+}
+
+func TestValidateTCPStoreGangEnvRequiresTorchrunContract(t *testing.T) {
+	err := validateTCPStoreGangEnv([]corev1.EnvVar{
+		{Name: "MASTER_ADDR", Value: "train-0.train.default.svc.cluster.local"},
+		{Name: "WORLD_SIZE", Value: "128"},
+	})
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "MASTER_PORT, NODE_RANK")
+}
+
+func TestValidateTCPStoreGangEnvRejectsConfigMapReference(t *testing.T) {
+	err := validateTCPStoreGangEnv([]corev1.EnvVar{
+		{
+			Name: "MASTER_ADDR",
+			ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+				Key: "master_addr",
+			}},
+		},
+		{Name: "MASTER_PORT", Value: "29400"},
+		{Name: "NODE_RANK", Value: "0"},
+		{Name: "WORLD_SIZE", Value: "128"},
+	})
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "MASTER_ADDR")
+}
+
 func TestCollectMatchingVolumeMounts(t *testing.T) {
 	injector := &Injector{cfg: &config.Config{
 		FileConfig: config.FileConfig{
@@ -234,6 +289,59 @@ func TestInjectInitContainers(t *testing.T) {
 				assert.True(t, hasVolumeMount(c, types.GangConfigVolumeName))
 				assert.True(t, hasVolumeMount(c, dshmVolumeName))
 			},
+		},
+		{
+			name: "TCPStore DeepEP is injected without a config volume",
+			cfg: func() *config.Config {
+				cfg := testGangConfig()
+				cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
+				cfg.InitContainers[0].Name = "preflight-deepep"
+				return cfg
+			}(),
+			discoverer: &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
+			pod: func() *corev1.Pod {
+				pod := staticGangPod()
+				pod.Annotations = map[string]string{
+					PreflightChecksAnnotation: "preflight-deepep",
+				}
+				return pod
+			}(),
+			expectPatches:    true,
+			expectGangCtx:    true,
+			expectGangID:     "test-gang",
+			expectCheckNames: "preflight-deepep",
+			validatePatches: func(t *testing.T, patches []PatchOperation) {
+				t.Helper()
+				initPatch := findPatchByPath(patches, "/spec/initContainers")
+				require.NotNil(t, initPatch)
+				containers, ok := initPatch.Value.([]corev1.Container)
+				require.True(t, ok)
+				require.Len(t, containers, 1)
+				assert.Equal(t, "tcpStore", findEnv(containers[0].Env, gangTransportEnv))
+				assert.Equal(t, "28000", findEnv(containers[0].Env, "GANG_TCPSTORE_PORT"))
+				assert.Equal(t, "preflight-deepep", findEnv(containers[0].Env, "GANG_RENDEZVOUS_ID"))
+				podName := findEnvVar(t, containers[0].Env, "POD_NAME")
+				require.NotNil(t, podName.ValueFrom)
+				require.NotNil(t, podName.ValueFrom.FieldRef)
+				assert.Equal(t, "metadata.name", podName.ValueFrom.FieldRef.FieldPath)
+				assert.False(t, hasEnvVar(containers[0], "GANG_CONFIG_DIR"))
+				assert.False(t, hasVolumeMount(containers[0], types.GangConfigVolumeName))
+				for _, volume := range extractVolumes(t, patches) {
+					assert.NotEqual(t, types.GangConfigVolumeName, volume.Name)
+				}
+			},
+		},
+		{
+			name: "TCPStore gang environment requires torchrun variables",
+			cfg: func() *config.Config {
+				cfg := testGangConfig()
+				cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
+				return cfg
+			}(),
+			discoverer:    &mockDiscoverer{name: "test", canHandle: true, gangID: "test-gang"},
+			pod:           gpuPod(),
+			expectError:   true,
+			expectGangCtx: false,
 		},
 		{
 			name:          "GPU pod with gang enabled but nil discoverer",
@@ -649,6 +757,122 @@ func TestBuildInitContainers(t *testing.T) {
 		assert.True(t, hasEnvVar(c, "POD_IP"))
 	})
 
+	t.Run("TCPStore gang env preserves workload values", func(t *testing.T) {
+		cfg := testGangConfig()
+		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
+		injector := NewInjector(cfg, nil)
+		gangCtx := &GangContext{GangID: "test-gang", ConfigMapName: "preflight-test-gang"}
+
+		containers := injector.buildInitContainers(staticGangPod(), corev1.ResourceList{
+			"nvidia.com/gpu": resource.MustParse("8"),
+		}, gangCtx, cfg.InitContainers)
+
+		require.Len(t, containers, 1)
+		env := containers[0].Env
+		assert.Equal(t, "tcpStore", findEnv(env, gangTransportEnv))
+		assert.Equal(t, "28000", findEnv(env, "GANG_TCPSTORE_PORT"))
+		assert.Equal(t, "preflight-dcgm-diag", findEnv(env, "GANG_RENDEZVOUS_ID"))
+		assert.Equal(t, "train-0.train.default.svc.cluster.local", findEnv(env, "MASTER_ADDR"))
+		assert.Equal(t, "29400", findEnv(env, "MASTER_PORT"))
+		assert.Equal(t, "128", findEnv(env, "WORLD_SIZE"))
+		require.NotNil(t, findEnvVar(t, env, "NODE_RANK").ValueFrom)
+		assert.False(t, hasEnvVar(containers[0], "GANG_CONFIG_DIR"))
+		assert.False(t, hasVolumeMount(containers[0], types.GangConfigVolumeName))
+	})
+
+	t.Run("TCPStore protocol env overrides template collisions", func(t *testing.T) {
+		cfg := testGangConfig()
+		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
+		cfg.InitContainers[0].Env = []corev1.EnvVar{
+			{Name: "GANG_CONFIG_DIR", Value: "/stale"},
+			{Name: gangTransportEnv, Value: "stale"},
+			{Name: "GANG_ID", Value: "stale"},
+			{Name: "GANG_RENDEZVOUS_ID", Value: "stale"},
+			{Name: "GANG_TCPSTORE_PORT", Value: "1"},
+			{Name: "GANG_TIMEOUT_SECONDS", Value: "1"},
+			{Name: "MASTER", Value: "stale"},
+			{Name: "MASTER_ADDR", Value: "stale"},
+			{Name: "MASTER_PORT", Value: "1"},
+			{Name: "NODE_RANK", Value: "99"},
+			{Name: "NUM_NODES", Value: "99"},
+			{Name: "POD_IP", Value: "stale"},
+			{Name: "POD_NAME", Value: "stale"},
+			{Name: "WORLD_SIZE", Value: "99"},
+		}
+		injector := NewInjector(cfg, nil)
+		gangCtx := &GangContext{GangID: "test-gang", ConfigMapName: "preflight-test-gang"}
+
+		containers := injector.buildInitContainers(staticGangPod(), corev1.ResourceList{
+			"nvidia.com/gpu": resource.MustParse("8"),
+		}, gangCtx, cfg.InitContainers)
+
+		require.Len(t, containers, 1)
+		env := containers[0].Env
+		assert.Equal(t, "tcpStore", findEnv(env, gangTransportEnv))
+		assert.Equal(t, "test-gang", findEnv(env, "GANG_ID"))
+		assert.Equal(t, "preflight-dcgm-diag", findEnv(env, "GANG_RENDEZVOUS_ID"))
+		assert.Equal(t, "28000", findEnv(env, "GANG_TCPSTORE_PORT"))
+		assert.Equal(t, "600", findEnv(env, "GANG_TIMEOUT_SECONDS"))
+		assert.Equal(t, "train-0.train.default.svc.cluster.local", findEnv(env, "MASTER"))
+		assert.Equal(t, "train-0.train.default.svc.cluster.local", findEnv(env, "MASTER_ADDR"))
+		assert.Equal(t, "29400", findEnv(env, "MASTER_PORT"))
+		assert.Equal(t, "128", findEnv(env, "NUM_NODES"))
+		assert.Equal(t, "128", findEnv(env, "WORLD_SIZE"))
+		assert.Equal(t,
+			"metadata.labels['batch.kubernetes.io/job-completion-index']",
+			findEnvVar(t, env, "NODE_RANK").ValueFrom.FieldRef.FieldPath)
+		assert.Equal(t, "metadata.name", findEnvVar(t, env, "POD_NAME").ValueFrom.FieldRef.FieldPath)
+		assert.Equal(t, "status.podIP", findEnvVar(t, env, "POD_IP").ValueFrom.FieldRef.FieldPath)
+		assert.False(t, hasEnvVar(containers[0], "GANG_CONFIG_DIR"))
+		for _, name := range tcpStoreReservedEnvNames {
+			if name != "GANG_CONFIG_DIR" {
+				assert.Equal(t, 1, countNamedEnvVars(env, name), name)
+			}
+		}
+	})
+
+	t.Run("TCPStore gang ports are distinct per check", func(t *testing.T) {
+		cfg := testGangConfig()
+		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
+		cfg.InitContainers = append(cfg.InitContainers, config.InitContainerSpec{
+			Container: corev1.Container{
+				Name:  "preflight-sdc-replay",
+				Image: "sdc:latest",
+			},
+		})
+		injector := NewInjector(cfg, nil)
+		gangCtx := &GangContext{GangID: "test-gang"}
+
+		containers := injector.buildInitContainers(
+			staticGangPod(), corev1.ResourceList{}, gangCtx, cfg.InitContainers)
+
+		require.Len(t, containers, 2)
+		assert.Equal(t, "28000", findEnv(containers[0].Env, "GANG_TCPSTORE_PORT"))
+		assert.Equal(t, "preflight-dcgm-diag", findEnv(containers[0].Env, "GANG_RENDEZVOUS_ID"))
+		assert.Equal(t, "28001", findEnv(containers[1].Env, "GANG_TCPSTORE_PORT"))
+		assert.Equal(t, "preflight-sdc-replay", findEnv(containers[1].Env, "GANG_RENDEZVOUS_ID"))
+	})
+
+	t.Run("TCPStore gang port is stable when earlier checks are not selected", func(t *testing.T) {
+		cfg := testGangConfig()
+		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
+		cfg.InitContainers = append(cfg.InitContainers, config.InitContainerSpec{
+			Container: corev1.Container{
+				Name:  "preflight-sdc-replay",
+				Image: "sdc:latest",
+			},
+		})
+		injector := NewInjector(cfg, nil)
+		gangCtx := &GangContext{GangID: "test-gang"}
+
+		containers := injector.buildInitContainers(
+			staticGangPod(), corev1.ResourceList{}, gangCtx, cfg.InitContainers[1:])
+
+		require.Len(t, containers, 1)
+		assert.Equal(t, "28001", findEnv(containers[0].Env, "GANG_TCPSTORE_PORT"))
+		assert.Equal(t, "preflight-sdc-replay", findEnv(containers[0].Env, "GANG_RENDEZVOUS_ID"))
+	})
+
 	t.Run("user NCCL env inherited", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.NCCLEnvPatterns = []string{"NCCL_*"}
@@ -1039,6 +1263,17 @@ func TestInjectVolumes(t *testing.T) {
 		assert.Equal(t, "preflight-test", vol.ConfigMap.Name)
 	})
 
+	t.Run("TCPStore transport omits gang config volume", func(t *testing.T) {
+		cfg := testGangConfig()
+		cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
+		injector := &Injector{cfg: cfg}
+		gangCtx := &GangContext{GangID: "test", ConfigMapName: "preflight-test"}
+
+		volumes := extractVolumes(t, injector.injectVolumes(&corev1.Pod{}, gangCtx))
+		assert.Nil(t, findVolume(volumes, types.GangConfigVolumeName))
+		requireVolume(t, volumes, dshmVolumeName)
+	})
+
 	t.Run("dshm volume specs", func(t *testing.T) {
 		injector := &Injector{cfg: testGangConfig()}
 		gangCtx := &GangContext{GangID: "test", ConfigMapName: "preflight-test"}
@@ -1226,6 +1461,36 @@ func findEnv(envs []corev1.EnvVar, name string) string {
 	return ""
 }
 
+func findEnvVar(t *testing.T, envs []corev1.EnvVar, name string) corev1.EnvVar {
+	t.Helper()
+	for _, env := range envs {
+		if env.Name == name {
+			return env
+		}
+	}
+	require.FailNow(t, "environment variable not found", name)
+	return corev1.EnvVar{}
+}
+
+func hasNamedEnvVar(envs []corev1.EnvVar, name string) bool {
+	for _, env := range envs {
+		if env.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func countNamedEnvVars(envs []corev1.EnvVar, name string) int {
+	count := 0
+	for _, env := range envs {
+		if env.Name == name {
+			count++
+		}
+	}
+	return count
+}
+
 type mockDiscoverer struct {
 	name      string
 	canHandle bool
@@ -1263,6 +1528,7 @@ func testGangConfig() *config.Config {
 		Timeout:              "10m",
 		TimeoutDuration:      10 * time.Minute,
 		MasterPort:           29500,
+		TCPStorePortBase:     28000,
 		ConfigMapMountPath:   "/etc/preflight",
 		MirrorResourceClaims: boolPtr(true),
 	}
@@ -1285,6 +1551,24 @@ func gpuPod() *corev1.Pod {
 			},
 		},
 	}
+}
+
+func staticGangPod() *corev1.Pod {
+	pod := gpuPod()
+	pod.Spec.Containers[0].Env = []corev1.EnvVar{
+		{Name: "MASTER", Value: "train-0.train.default.svc.cluster.local"},
+		{Name: "MASTER_ADDR", Value: "train-0.train.default.svc.cluster.local"},
+		{Name: "MASTER_PORT", Value: "29400"},
+		{
+			Name: "NODE_RANK",
+			ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{
+				FieldPath: "metadata.labels['batch.kubernetes.io/job-completion-index']",
+			}},
+		},
+		{Name: "NUM_NODES", Value: "128"},
+		{Name: "WORLD_SIZE", Value: "128"},
+	}
+	return pod
 }
 
 func gpuEFAPod() *corev1.Pod {

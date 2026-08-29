@@ -34,6 +34,9 @@ type Config struct {
 // inserted relative to existing init containers in the pod spec.
 type InitContainerPlacement string
 
+// GangConfigTransport controls how gang bootstrap configuration reaches pods.
+type GangConfigTransport string
+
 const (
 	// PlacementAppend appends preflight init containers after existing ones.
 	// This is the default and ensures provider-injected setup containers
@@ -44,6 +47,14 @@ const (
 	// Use this when preflight checks must run before other init containers,
 	// for example to gate workload setup on GPU health validation.
 	PlacementPrepend InitContainerPlacement = "prepend"
+
+	// GangConfigTransportConfigMap mounts a controller-managed ConfigMap.
+	GangConfigTransportConfigMap GangConfigTransport = "configMap"
+
+	// GangConfigTransportTCPStore reuses torchrun's static identity and forms
+	// the gang through a node-level TCPStore. No gang ConfigMap is created or
+	// mounted.
+	GangConfigTransportTCPStore GangConfigTransport = "tcpStore"
 )
 
 // InitContainerSpec wraps corev1.Container with a DefaultEnabled field
@@ -139,6 +150,10 @@ type GangCoordinationConfig struct {
 	// Enabled enables gang coordination for multi-node checks.
 	Enabled bool `yaml:"enabled"`
 
+	// ConfigTransport selects how init containers receive gang bootstrap data.
+	// Supported values are "configMap" and "tcpStore". Default: configMap.
+	ConfigTransport GangConfigTransport `yaml:"configTransport,omitempty"`
+
 	// Timeout is the maximum time to wait for all gang members to register.
 	// Accepts duration strings like "10m", "5m30s", etc.
 	// Default: 10m
@@ -150,6 +165,12 @@ type GangCoordinationConfig struct {
 	// MasterPort is the port used for PyTorch distributed TCP bootstrap.
 	// Default: 29500
 	MasterPort int `yaml:"masterPort,omitempty"`
+
+	// TCPStorePortBase is the first port allocated to injected gang checks.
+	// Each selected init container receives this base plus its check index, so
+	// checks progressing at different speeds cannot attach to one another's
+	// store. Default: 28000
+	TCPStorePortBase int `yaml:"tcpStorePortBase,omitempty"`
 
 	// ConfigMapMountPath is the path where gang ConfigMap is mounted in init containers.
 	// Default: /etc/preflight
@@ -268,8 +289,16 @@ func (c *GangCoordinationConfig) setDefaults() {
 		c.Timeout = "10m"
 	}
 
+	if c.ConfigTransport == "" {
+		c.ConfigTransport = GangConfigTransportConfigMap
+	}
+
 	if c.MasterPort == 0 {
 		c.MasterPort = 29500
+	}
+
+	if c.TCPStorePortBase == 0 {
+		c.TCPStorePortBase = 28000
 	}
 
 	if c.ConfigMapMountPath == "" {
@@ -321,6 +350,32 @@ func (c *FileConfig) validate() error {
 	}
 
 	if c.GangCoordination.Enabled {
+		switch c.GangCoordination.ConfigTransport {
+		case GangConfigTransportConfigMap, GangConfigTransportTCPStore:
+		default:
+			return fmt.Errorf(
+				"invalid gangCoordination.configTransport %q: must be %q or %q",
+				c.GangCoordination.ConfigTransport,
+				GangConfigTransportConfigMap,
+				GangConfigTransportTCPStore)
+		}
+		if c.GangCoordination.ConfigTransport == GangConfigTransportTCPStore &&
+			(c.GangCoordination.TCPStorePortBase < 1 ||
+				c.GangCoordination.TCPStorePortBase+len(c.InitContainers)-1 > 65535) {
+			return fmt.Errorf(
+				"gangCoordination.tcpStorePortBase %d cannot allocate %d init-container ports",
+				c.GangCoordination.TCPStorePortBase,
+				len(c.InitContainers))
+		}
+		if c.GangCoordination.ConfigTransport == GangConfigTransportTCPStore &&
+			c.GangCoordination.MasterPort >= c.GangCoordination.TCPStorePortBase &&
+			c.GangCoordination.MasterPort < c.GangCoordination.TCPStorePortBase+len(c.InitContainers) {
+			return fmt.Errorf(
+				"gangCoordination.masterPort %d overlaps the TCPStore port range starting at %d",
+				c.GangCoordination.MasterPort,
+				c.GangCoordination.TCPStorePortBase)
+		}
+
 		timeout, err := time.ParseDuration(c.GangCoordination.Timeout)
 		if err != nil {
 			return fmt.Errorf("invalid gangCoordination.timeout %q: %w", c.GangCoordination.Timeout, err)

@@ -78,10 +78,75 @@ gangCoordination:
 
 		assert.True(t, cfg.GangCoordination.Enabled)
 		assert.Equal(t, 10*time.Minute, cfg.GangCoordination.TimeoutDuration)
+		assert.Equal(t, GangConfigTransportConfigMap, cfg.GangCoordination.ConfigTransport)
 		assert.Equal(t, 29500, cfg.GangCoordination.MasterPort)
+		assert.Equal(t, 28000, cfg.GangCoordination.TCPStorePortBase)
 		assert.Equal(t, "/etc/preflight", cfg.GangCoordination.ConfigMapMountPath)
 		require.NotNil(t, cfg.GangCoordination.MirrorResourceClaims)
 		assert.True(t, *cfg.GangCoordination.MirrorResourceClaims)
+	})
+
+	t.Run("gang TCPStore transport", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-nccl-allreduce
+    image: nccl:latest
+gangCoordination:
+  enabled: true
+  configTransport: tcpStore
+`)
+		cfg, err := Load(path)
+		require.NoError(t, err)
+		assert.Equal(t, GangConfigTransportTCPStore, cfg.GangCoordination.ConfigTransport)
+	})
+
+	t.Run("gang invalid config transport", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: preflight-nccl-allreduce
+    image: nccl:latest
+gangCoordination:
+  enabled: true
+  configTransport: secret
+`)
+		_, err := Load(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "configTransport")
+	})
+
+	t.Run("gang TCPStore ports must fit", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: first
+    image: first:latest
+  - name: second
+    image: second:latest
+gangCoordination:
+  enabled: true
+  configTransport: tcpStore
+  tcpStorePortBase: 65535
+`)
+		_, err := Load(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "tcpStorePortBase")
+	})
+
+	t.Run("gang TCPStore ports must not overlap master", func(t *testing.T) {
+		path := writeYAML(t, `
+initContainers:
+  - name: first
+    image: first:latest
+  - name: second
+    image: second:latest
+gangCoordination:
+  enabled: true
+  configTransport: tcpStore
+  masterPort: 29500
+  tcpStorePortBase: 29499
+`)
+		_, err := Load(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "overlaps")
 	})
 
 	t.Run("gang custom values", func(t *testing.T) {
@@ -93,6 +158,7 @@ gangCoordination:
   enabled: true
   timeout: "5m30s"
   masterPort: 29501
+  tcpStorePortBase: 28100
   configMapMountPath: "/custom/path"
 `)
 		cfg, err := Load(path)
@@ -100,6 +166,7 @@ gangCoordination:
 
 		assert.Equal(t, 5*time.Minute+30*time.Second, cfg.GangCoordination.TimeoutDuration)
 		assert.Equal(t, 29501, cfg.GangCoordination.MasterPort)
+		assert.Equal(t, 28100, cfg.GangCoordination.TCPStorePortBase)
 		assert.Equal(t, "/custom/path", cfg.GangCoordination.ConfigMapMountPath)
 	})
 

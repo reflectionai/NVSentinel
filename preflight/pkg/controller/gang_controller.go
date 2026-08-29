@@ -188,25 +188,25 @@ func (c *GangController) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 // RegisterPod is called by the webhook when a pod is admitted that belongs to a gang.
-// It creates the ConfigMap immediately so schedulers (like KAI) that validate
-// ConfigMap existence before scheduling won't block.
+// For ConfigMap transport, it creates the ConfigMap immediately so schedulers
+// (like KAI) that validate ConfigMap existence before scheduling won't block.
 func (c *GangController) RegisterPod(ctx context.Context, reg webhook.GangRegistration) {
 	if reg.GangID == "" {
 		slog.Info("Gang ID is empty", "namespace", reg.Namespace, "pod", reg.PodName)
 		return
 	}
 
-	// Create ConfigMap immediately (with empty peer list).
-	// Peer IPs will be added later when pods get scheduled and receive IPs.
-	// This is needed as one of the schedulers (KAI) that we were targeting
-	// validates the configmap before scheduling even for optional configmap volumes.
-	// https://github.com/NVIDIA/KAI-Scheduler/issues/988
-	if err := c.coordinator.EnsureConfigMap(ctx, reg.Namespace, reg.GangID, 0); err != nil {
-		slog.Error("Failed to ensure gang ConfigMap",
-			"namespace", reg.Namespace,
-			"gangID", reg.GangID,
-			"configMap", reg.ConfigMapName,
-			"error", err)
+	if c.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportTCPStore {
+		// Create the ConfigMap immediately (with an empty peer list). KAI
+		// validates even optional ConfigMap volumes before scheduling.
+		// https://github.com/NVIDIA/KAI-Scheduler/issues/988
+		if err := c.coordinator.EnsureConfigMap(ctx, reg.Namespace, reg.GangID, 0); err != nil {
+			slog.Error("Failed to ensure gang ConfigMap",
+				"namespace", reg.Namespace,
+				"gangID", reg.GangID,
+				"configMap", reg.ConfigMapName,
+				"error", err)
+		}
 	}
 
 	// Create NCCL topology ConfigMap in the pod's namespace if topo data

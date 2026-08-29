@@ -294,11 +294,17 @@ gangDiscovery: {}
 gangCoordination:
   # Enable gang coordination (required for gang-wide checks)
   enabled: true
+  # Gang bootstrap delivery. configMap uses the controller-managed peer roster.
+  # tcpStore copies the workload's static torchrun identity and forms a
+  # node-level TCPStore barrier with no gang ConfigMap or volume.
+  configTransport: "configMap"
   # Maximum time to wait for all gang members to register
   timeout: "10m"
   # Port for PyTorch distributed TCP bootstrap (torchrun)
   masterPort: 29500
-  # Path where gang ConfigMap is mounted in init containers
+  # First TCPStore barrier port; each selected init container gets base + index.
+  tcpStorePortBase: 28000
+  # Path where gang ConfigMaps are mounted in init containers
   configMapMountPath: "/etc/preflight"
   # NCCL topology ConfigMap name — required for Azure InfiniBand.
   # Without this, NCCL cannot map GPUs to IB HCAs and falls back to TCP.

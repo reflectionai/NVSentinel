@@ -257,13 +257,28 @@ Here membership is determined by a pod label instead of an annotation. The rest 
 
 ## Gang coordination
 
-When `gangCoordination.enabled` is true (default in the preflight chart), the controller coordinates multi-node checks through ConfigMaps:
+When `gangCoordination.enabled` is true (default in the preflight chart), the
+webhook can bootstrap multi-node checks through one of two transports.
+
+With the default `configTransport: configMap`:
 
 1. At admission time the webhook creates a skeleton ConfigMap for the gang and injects it as a volume mount on the pod's preflight init containers.
 2. As pods become ready the gang controller populates the ConfigMap with peer information (IP, rank).
 3. Init containers read the ConfigMap at `gangCoordination.configMapMountPath` (default `/etc/preflight`) to discover the master address and peer list.
 
-Each gang ConfigMap contains:
+With `configTransport: tcpStore`:
+
+1. The workload's main container must explicitly define literal `MASTER_ADDR`, `MASTER_PORT`, and `WORLD_SIZE` values plus a literal or Downward API `NODE_RANK`. `MASTER` and `NUM_NODES` are copied when present.
+2. At admission time the webhook copies those environment entries, including `valueFrom` sources, into each selected gang init container and adds `GANG_CONFIG_TRANSPORT=tcpStore`, a per-check `GANG_TCPSTORE_PORT`, and `GANG_RENDEZVOUS_ID`.
+3. The webhook creates and mounts no gang ConfigMap, and the gang controller does not publish a peer roster. Rank 0 hosts a node-level TCPStore on the per-check port; every gang pod registers and waits for the full-job barrier before the check starts.
+
+Use `tcpStore` only for workloads whose pod DNS names and torchrun environment
+provide a deterministic rank-to-address mapping understood by the selected
+check image. The store carries only barrier state, not a peer roster; checks
+derive addresses locally. The webhook rejects gang injection when a required
+environment entry is missing.
+
+The ConfigMap transport's mounted directory contains:
 
 | Key | Value |
 |-----|-------|
@@ -273,15 +288,19 @@ Each gang ConfigMap contains:
 | `master_port` | Port for PyTorch distributed TCP bootstrap (default `29500`) |
 | `gang_id` | Unique gang identifier (discoverer prefix + namespace + group) |
 
-ConfigMaps are labeled `nvsentinel.nvidia.com/managed-by: preflight` and named with a `preflight-` prefix.
+ConfigMaps are labeled `nvsentinel.nvidia.com/managed-by: preflight` and named
+with a `preflight-` prefix. The TCPStore transport creates no gang
+ConfigMaps.
 
 ### Key `gangCoordination` values
 
 ```yaml
 gangCoordination:
   enabled: true
+  configTransport: "configMap" # Or "tcpStore"
   timeout: "10m"            # Max wait for all members to register
   masterPort: 29500         # PyTorch distributed bootstrap port
+  tcpStorePortBase: 28000   # Per-check barrier ports start here
   configMapMountPath: "/etc/preflight"
 
   # Azure InfiniBand topology (required for NDv4/v5)

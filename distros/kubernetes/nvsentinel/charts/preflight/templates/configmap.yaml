@@ -39,8 +39,10 @@ data:
       {{- toYaml .Values.gangDiscovery | nindent 6 }}
     gangCoordination:
       enabled: {{ .Values.gangCoordination.enabled }}
+      configTransport: {{ .Values.gangCoordination.configTransport | quote }}
       timeout: {{ .Values.gangCoordination.timeout | quote }}
       masterPort: {{ .Values.gangCoordination.masterPort }}
+      tcpStorePortBase: {{ .Values.gangCoordination.tcpStorePortBase }}
       configMapMountPath: {{ .Values.gangCoordination.configMapMountPath | quote }}
       {{- /* Resolve ncclTopoConfigMap: explicit or auto-generated from shape */}}
       {{- $topoConfigMap := .Values.gangCoordination.ncclTopoConfigMap | default "" }}

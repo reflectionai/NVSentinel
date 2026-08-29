@@ -49,7 +49,35 @@ const (
 	// checks to run. Value is a comma-separated list of init container names.
 	// When absent, all containers with defaultEnabled (or omitted) are injected.
 	PreflightChecksAnnotation = "nvsentinel.nvidia.com/preflight-checks"
+
+	gangTransportEnv = "GANG_CONFIG_TRANSPORT"
 )
+
+var torchrunGangEnvNames = []string{
+	"MASTER",
+	"MASTER_ADDR",
+	"MASTER_PORT",
+	"NODE_RANK",
+	"NUM_NODES",
+	"WORLD_SIZE",
+}
+
+var tcpStoreReservedEnvNames = []string{
+	"GANG_CONFIG_DIR",
+	gangTransportEnv,
+	"GANG_ID",
+	"GANG_RENDEZVOUS_ID",
+	"GANG_TCPSTORE_PORT",
+	"GANG_TIMEOUT_SECONDS",
+	"MASTER",
+	"MASTER_ADDR",
+	"MASTER_PORT",
+	"NODE_RANK",
+	"NUM_NODES",
+	"POD_IP",
+	"POD_NAME",
+	"WORLD_SIZE",
+}
 
 type PatchOperation struct {
 	Op    string `json:"op"`
@@ -151,6 +179,12 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 	selected, err := i.selectInitContainers(pod)
 	if err != nil {
 		return nil, nil, err
+	}
+	if gangCtx != nil && len(selected) > 0 &&
+		i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
+		if err := validateTCPStoreGangEnv(i.collectTorchrunGangEnvVars(pod.Spec.Containers)); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	initContainers := i.buildInitContainers(pod, maxResources, gangCtx, selected)
@@ -341,7 +375,12 @@ func (i *Injector) buildInitContainers(
 	// configured patterns. This allows init containers to inherit fabric-
 	// specific NCCL config from the user's training container.
 	userEnvVars := i.collectMatchingEnvVars(pod.Spec.Containers)
+	torchrunGangEnvVars := i.collectTorchrunGangEnvVars(pod.Spec.Containers)
 	userVolumeMounts := i.collectMatchingVolumeMounts(pod.Spec.Containers)
+	checkIndexByName := make(map[string]int, len(i.cfg.InitContainers))
+	for checkIndex, spec := range i.cfg.InitContainers {
+		checkIndexByName[spec.Name] = checkIndex
+	}
 
 	for _, tmpl := range selected {
 		container := tmpl.DeepCopy()
@@ -368,11 +407,16 @@ func (i *Injector) buildInitContainers(
 		}
 
 		i.injectCommonEnv(container)
-		i.injectGangEnv(container, gangCtx)
 
 		// Copy matching env vars from user containers (lower precedence
 		// than the init container's own env vars — only adds new names).
 		i.mergeEnvVars(container, userEnvVars)
+
+		i.injectGangEnv(container, gangCtx, checkIndexByName[container.Name])
+		if gangCtx != nil &&
+			i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
+			i.replaceEnvVars(container, torchrunGangEnvNames, torchrunGangEnvVars)
+		}
 
 		// Copy matching volume mounts from user containers.
 		i.mergeVolumeMounts(container, userVolumeMounts)
@@ -394,19 +438,18 @@ func (i *Injector) injectGangMounts(
 	mirrorClaims bool,
 	podResourceClaims []corev1.PodResourceClaim,
 ) {
-	// Gang ConfigMap and /dev/shm mounts are always needed for gang members.
-	container.VolumeMounts = append(container.VolumeMounts,
-		corev1.VolumeMount{
+	if i.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportTCPStore {
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 			Name:      types.GangConfigVolumeName,
 			MountPath: i.cfg.GangCoordination.ConfigMapMountPath,
 			ReadOnly:  true,
-		},
-		// NCCL requires a larger shared memory segment than the default 64MB.
-		corev1.VolumeMount{
-			Name:      dshmVolumeName,
-			MountPath: "/dev/shm",
-		},
-	)
+		})
+	}
+	// NCCL requires a larger shared memory segment than the default 64MB.
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name:      dshmVolumeName,
+		MountPath: "/dev/shm",
+	})
 
 	// Add NCCL topology ConfigMap mount if configured.
 	if i.cfg.GangCoordination.NCCLTopoConfigMap != "" {
@@ -594,31 +637,17 @@ func (i *Injector) injectImagePullSecrets(pod *corev1.Pod) []PatchOperation {
 	return patches
 }
 
-// collectGangVolumes gathers all gang-related volumes (ConfigMap, shared memory,
-// NCCL topology, extra hostPath) that are not already present in the pod.
+// collectGangVolumes gathers all gang-related volumes (configuration, shared
+// memory, NCCL topology, extra hostPath) that are not already present in the pod.
 func (i *Injector) collectGangVolumes(
 	gangCtx *GangContext,
 	existingVolumes map[string]bool,
 ) []corev1.Volume {
 	var volumes []corev1.Volume
 
-	// ConfigMap is optional because it may not exist yet when the pod is created.
-	// The controller creates it when it discovers the gang.
-	// Init containers poll the mounted path until peers are registered.
-	if !existingVolumes[types.GangConfigVolumeName] {
-		optional := true
-
-		volumes = append(volumes, corev1.Volume{
-			Name: types.GangConfigVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: gangCtx.ConfigMapName,
-					},
-					Optional: &optional,
-				},
-			},
-		})
+	if i.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportTCPStore &&
+		!existingVolumes[types.GangConfigVolumeName] {
+		volumes = append(volumes, i.gangConfigVolume(gangCtx))
 	}
 
 	// Add shared memory volume for NCCL multi-GPU communication.
@@ -661,6 +690,19 @@ func (i *Injector) collectGangVolumes(
 	volumes = append(volumes, i.collectExtraHostPathVolumes(existingVolumes)...)
 
 	return volumes
+}
+
+func (i *Injector) gangConfigVolume(gangCtx *GangContext) corev1.Volume {
+	optional := true
+	return corev1.Volume{
+		Name: types.GangConfigVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: gangCtx.ConfigMapName},
+				Optional:             &optional,
+			},
+		},
+	}
 }
 
 // collectExtraHostPathVolumes builds volumes for configured extra hostPath mounts
@@ -710,7 +752,11 @@ func parseHostPathType(hostPathType string) (*corev1.HostPathType, bool) {
 }
 
 // injectGangEnv injects gang-related environment variables for multi-node checks.
-func (i *Injector) injectGangEnv(container *corev1.Container, gangCtx *GangContext) {
+func (i *Injector) injectGangEnv(
+	container *corev1.Container,
+	gangCtx *GangContext,
+	checkIndex int,
+) {
 	if gangCtx == nil {
 		return
 	}
@@ -723,16 +769,8 @@ func (i *Injector) injectGangEnv(container *corev1.Container, gangCtx *GangConte
 			Value: gangCtx.GangID,
 		},
 		{
-			Name:  "GANG_CONFIG_DIR",
-			Value: i.cfg.GangCoordination.ConfigMapMountPath,
-		},
-		{
 			Name:  "GANG_TIMEOUT_SECONDS",
 			Value: strconv.Itoa(int(i.cfg.GangCoordination.TimeoutDuration.Seconds())),
-		},
-		{
-			Name:  "MASTER_PORT",
-			Value: strconv.Itoa(i.cfg.GangCoordination.MasterPort),
 		},
 		{
 			Name: "POD_NAME",
@@ -751,8 +789,103 @@ func (i *Injector) injectGangEnv(container *corev1.Container, gangCtx *GangConte
 			},
 		},
 	}
+	if i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
+		envVars = append(envVars,
+			corev1.EnvVar{
+				Name:  gangTransportEnv,
+				Value: string(config.GangConfigTransportTCPStore),
+			},
+			corev1.EnvVar{
+				Name:  "GANG_TCPSTORE_PORT",
+				Value: strconv.Itoa(i.cfg.GangCoordination.TCPStorePortBase + checkIndex),
+			},
+			corev1.EnvVar{
+				Name:  "GANG_RENDEZVOUS_ID",
+				Value: container.Name,
+			},
+		)
+	} else {
+		envVars = append(envVars,
+			corev1.EnvVar{
+				Name:  "GANG_CONFIG_DIR",
+				Value: i.cfg.GangCoordination.ConfigMapMountPath,
+			},
+			corev1.EnvVar{
+				Name:  "MASTER_PORT",
+				Value: strconv.Itoa(i.cfg.GangCoordination.MasterPort),
+			},
+		)
+	}
 
-	i.mergeEnvVars(container, envVars)
+	if i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
+		i.replaceEnvVars(container, tcpStoreReservedEnvNames, envVars)
+		return
+	}
+
+	reservedNames := make([]string, 0, len(envVars))
+	for _, env := range envVars {
+		reservedNames = append(reservedNames, env.Name)
+	}
+	i.replaceEnvVars(container, reservedNames, envVars)
+}
+
+// collectTorchrunGangEnvVars copies torchrun's static identity contract from
+// one workload container. ValueFrom is preserved, including the indexed Job
+// rank. The first container with the complete required contract wins.
+func (i *Injector) collectTorchrunGangEnvVars(containers []corev1.Container) []corev1.EnvVar {
+	wanted := make(map[string]bool, len(torchrunGangEnvNames))
+	for _, name := range torchrunGangEnvNames {
+		wanted[name] = true
+	}
+
+	var fallback []corev1.EnvVar
+	for _, container := range containers {
+		byName := make(map[string]corev1.EnvVar, len(torchrunGangEnvNames))
+		for _, env := range container.Env {
+			if wanted[env.Name] {
+				byName[env.Name] = env
+			}
+		}
+
+		result := make([]corev1.EnvVar, 0, len(byName))
+		for _, name := range torchrunGangEnvNames {
+			if env, exists := byName[name]; exists {
+				result = append(result, env)
+			}
+		}
+		if len(result) > len(fallback) {
+			fallback = result
+		}
+		if validateTCPStoreGangEnv(result) == nil {
+			return result
+		}
+	}
+	return fallback
+}
+
+func validateTCPStoreGangEnv(envVars []corev1.EnvVar) error {
+	byName := make(map[string]corev1.EnvVar, len(envVars))
+	for _, env := range envVars {
+		byName[env.Name] = env
+	}
+
+	var missing []string
+	for _, name := range []string{"MASTER_ADDR", "MASTER_PORT", "WORLD_SIZE"} {
+		if byName[name].Value == "" {
+			missing = append(missing, name)
+		}
+	}
+	rank := byName["NODE_RANK"]
+	if rank.Value == "" && (rank.ValueFrom == nil || rank.ValueFrom.FieldRef == nil) {
+		missing = append(missing, "NODE_RANK")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf(
+			"gangCoordination.configTransport %q requires literal MASTER_ADDR, MASTER_PORT, and WORLD_SIZE plus literal or downward-API NODE_RANK: missing or externally sourced %s",
+			config.GangConfigTransportTCPStore,
+			strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // mergeEnvVars merges the provided env vars into the container.
@@ -768,6 +901,26 @@ func (i *Injector) mergeEnvVars(container *corev1.Container, envVars []corev1.En
 			container.Env = append(container.Env, env)
 		}
 	}
+}
+
+// replaceEnvVars removes every reserved name and appends authoritative values.
+func (i *Injector) replaceEnvVars(
+	container *corev1.Container,
+	reservedNames []string,
+	envVars []corev1.EnvVar,
+) {
+	reserved := make(map[string]bool, len(reservedNames))
+	for _, name := range reservedNames {
+		reserved[name] = true
+	}
+
+	retained := make([]corev1.EnvVar, 0, len(container.Env)+len(envVars))
+	for _, env := range container.Env {
+		if !reserved[env.Name] {
+			retained = append(retained, env)
+		}
+	}
+	container.Env = append(retained, envVars...)
 }
 
 // collectMatchingEnvVars scans all containers for env vars whose names match
