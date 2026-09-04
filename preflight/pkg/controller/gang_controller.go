@@ -196,7 +196,11 @@ func (c *GangController) RegisterPod(ctx context.Context, reg webhook.GangRegist
 		return
 	}
 
-	if c.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportTCPStore {
+	transport := reg.ConfigTransport
+	if transport == "" {
+		transport = c.cfg.GangCoordination.ConfigTransport
+	}
+	if transport != config.GangConfigTransportTCPStore {
 		// Create the ConfigMap immediately (with an empty peer list). KAI
 		// validates even optional ConfigMap volumes before scheduling.
 		// https://github.com/NVIDIA/KAI-Scheduler/issues/988

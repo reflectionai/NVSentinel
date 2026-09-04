@@ -292,6 +292,11 @@ ConfigMaps are labeled `nvsentinel.nvidia.com/managed-by: preflight` and named
 with a `preflight-` prefix. The TCPStore transport creates no gang
 ConfigMaps.
 
+Pods controlled by a `ray.io/v1` `RayCluster` use `configMap` regardless of the
+cluster default. KubeRay does not provide the static dense `NODE_RANK` contract
+TCPStore coordination requires, and existing RayClusters cannot gain a new
+pod-template annotation during a webhook rollout.
+
 ### Key `gangCoordination` values
 
 ```yaml

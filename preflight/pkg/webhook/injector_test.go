@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestCollectMatchingEnvVars(t *testing.T) {
@@ -342,6 +343,30 @@ func TestInjectInitContainers(t *testing.T) {
 			pod:           gpuPod(),
 			expectError:   true,
 			expectGangCtx: false,
+		},
+		{
+			name: "RayCluster pod defaults to ConfigMap transport",
+			cfg: func() *config.Config {
+				cfg := testGangConfig()
+				cfg.GangCoordination.ConfigTransport = config.GangConfigTransportTCPStore
+				return cfg
+			}(),
+			discoverer:       &mockDiscoverer{name: "test", canHandle: true, gangID: "ray-gang"},
+			pod:              rayClusterOwnedPod(),
+			expectPatches:    true,
+			expectGangCtx:    true,
+			expectGangID:     "ray-gang",
+			expectCheckNames: "preflight-dcgm-diag",
+			validatePatches: func(t *testing.T, patches []PatchOperation) {
+				t.Helper()
+				initPatch := findPatchByPath(patches, "/spec/initContainers")
+				require.NotNil(t, initPatch)
+				containers, ok := initPatch.Value.([]corev1.Container)
+				require.True(t, ok)
+				require.Len(t, containers, 1)
+				assert.True(t, hasEnvVar(containers[0], "GANG_CONFIG_DIR"))
+				assert.True(t, hasVolumeMount(containers[0], types.GangConfigVolumeName))
+			},
 		},
 		{
 			name:          "GPU pod with gang enabled but nil discoverer",
@@ -1568,6 +1593,18 @@ func staticGangPod() *corev1.Pod {
 		{Name: "NUM_NODES", Value: "128"},
 		{Name: "WORLD_SIZE", Value: "128"},
 	}
+	return pod
+}
+
+func rayClusterOwnedPod() *corev1.Pod {
+	pod := gpuPod()
+	controller := true
+	pod.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: "ray.io/v1",
+		Kind:       "RayCluster",
+		Name:       "ray-gang",
+		Controller: &controller,
+	}}
 	return pod
 }
 

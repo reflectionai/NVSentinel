@@ -38,10 +38,11 @@ const PreflightRunOncePerRayClusterAnnotation = "nvsentinel.nvidia.com/preflight
 
 // GangRegistration is sent to the controller to register a pod with its gang.
 type GangRegistration struct {
-	Namespace     string
-	PodName       string
-	GangID        string
-	ConfigMapName string
+	Namespace       string
+	PodName         string
+	GangID          string
+	ConfigMapName   string
+	ConfigTransport config.GangConfigTransport
 	// CheckNames is a comma-separated list of preflight checks this pod
 	// will run. Annotation order when present, chart order for defaults.
 	CheckNames string
@@ -170,11 +171,12 @@ func (h *Handler) mutate(ctx context.Context, req *admissionv1.AdmissionRequest)
 			"configMap", gangCtx.ConfigMapName)
 
 		h.onGangRegister(ctx, GangRegistration{
-			Namespace:     pod.Namespace,
-			PodName:       podName,
-			GangID:        gangCtx.GangID,
-			ConfigMapName: gangCtx.ConfigMapName,
-			CheckNames:    gangCtx.CheckNames,
+			Namespace:       pod.Namespace,
+			PodName:         podName,
+			GangID:          gangCtx.GangID,
+			ConfigMapName:   gangCtx.ConfigMapName,
+			ConfigTransport: gangCtx.ConfigTransport,
+			CheckNames:      gangCtx.CheckNames,
 		})
 	}
 

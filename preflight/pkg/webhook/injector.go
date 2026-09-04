@@ -26,6 +26,7 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var supportedHostPathTypes = map[string]corev1.HostPathType{
@@ -100,8 +101,9 @@ func NewInjector(cfg *config.Config, discoverer gang.GangDiscoverer) *Injector {
 // GangContext contains gang information extracted during injection.
 // This is returned so the controller can register the peer.
 type GangContext struct {
-	GangID        string
-	ConfigMapName string
+	GangID          string
+	ConfigMapName   string
+	ConfigTransport config.GangConfigTransport
 	// CheckNames is a comma-separated list of injected check container
 	// names. Annotation order when annotation is present, chart order
 	// when using defaults.
@@ -180,10 +182,12 @@ func (i *Injector) InjectInitContainers(pod *corev1.Pod) ([]PatchOperation, *Gan
 	if err != nil {
 		return nil, nil, err
 	}
-	if gangCtx != nil && len(selected) > 0 &&
-		i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
-		if err := validateTCPStoreGangEnv(i.collectTorchrunGangEnvVars(pod.Spec.Containers)); err != nil {
-			return nil, nil, err
+	if gangCtx != nil {
+		gangCtx.ConfigTransport = i.gangConfigTransportForPod(pod)
+		if len(selected) > 0 && gangCtx.ConfigTransport == config.GangConfigTransportTCPStore {
+			if err := validateTCPStoreGangEnv(i.collectTorchrunGangEnvVars(pod.Spec.Containers)); err != nil {
+				return nil, nil, err
+			}
 		}
 	}
 
@@ -414,7 +418,7 @@ func (i *Injector) buildInitContainers(
 
 		i.injectGangEnv(container, gangCtx, checkIndexByName[container.Name])
 		if gangCtx != nil &&
-			i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
+			i.gangConfigTransport(gangCtx) == config.GangConfigTransportTCPStore {
 			i.replaceEnvVars(container, torchrunGangEnvNames, torchrunGangEnvVars)
 		}
 
@@ -422,7 +426,7 @@ func (i *Injector) buildInitContainers(
 		i.mergeVolumeMounts(container, userVolumeMounts)
 
 		if gangCtx != nil {
-			i.injectGangMounts(container, mirrorClaims, pod.Spec.ResourceClaims)
+			i.injectGangMounts(container, gangCtx, mirrorClaims, pod.Spec.ResourceClaims)
 		}
 
 		initContainers = append(initContainers, *container)
@@ -435,10 +439,11 @@ func (i *Injector) buildInitContainers(
 // to an init container.
 func (i *Injector) injectGangMounts(
 	container *corev1.Container,
+	gangCtx *GangContext,
 	mirrorClaims bool,
 	podResourceClaims []corev1.PodResourceClaim,
 ) {
-	if i.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportTCPStore {
+	if i.gangConfigTransport(gangCtx) != config.GangConfigTransportTCPStore {
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 			Name:      types.GangConfigVolumeName,
 			MountPath: i.cfg.GangCoordination.ConfigMapMountPath,
@@ -645,7 +650,7 @@ func (i *Injector) collectGangVolumes(
 ) []corev1.Volume {
 	var volumes []corev1.Volume
 
-	if i.cfg.GangCoordination.ConfigTransport != config.GangConfigTransportTCPStore &&
+	if i.gangConfigTransport(gangCtx) != config.GangConfigTransportTCPStore &&
 		!existingVolumes[types.GangConfigVolumeName] {
 		volumes = append(volumes, i.gangConfigVolume(gangCtx))
 	}
@@ -789,7 +794,7 @@ func (i *Injector) injectGangEnv(
 			},
 		},
 	}
-	if i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
+	if i.gangConfigTransport(gangCtx) == config.GangConfigTransportTCPStore {
 		envVars = append(envVars,
 			corev1.EnvVar{
 				Name:  gangTransportEnv,
@@ -817,7 +822,7 @@ func (i *Injector) injectGangEnv(
 		)
 	}
 
-	if i.cfg.GangCoordination.ConfigTransport == config.GangConfigTransportTCPStore {
+	if i.gangConfigTransport(gangCtx) == config.GangConfigTransportTCPStore {
 		i.replaceEnvVars(container, tcpStoreReservedEnvNames, envVars)
 		return
 	}
@@ -827,6 +832,21 @@ func (i *Injector) injectGangEnv(
 		reservedNames = append(reservedNames, env.Name)
 	}
 	i.replaceEnvVars(container, reservedNames, envVars)
+}
+
+func (i *Injector) gangConfigTransportForPod(pod *corev1.Pod) config.GangConfigTransport {
+	owner := metav1.GetControllerOf(pod)
+	if owner != nil && owner.APIVersion == "ray.io/v1" && owner.Kind == "RayCluster" {
+		return config.GangConfigTransportConfigMap
+	}
+	return i.cfg.GangCoordination.ConfigTransport
+}
+
+func (i *Injector) gangConfigTransport(gangCtx *GangContext) config.GangConfigTransport {
+	if gangCtx != nil && gangCtx.ConfigTransport != "" {
+		return gangCtx.ConfigTransport
+	}
+	return i.cfg.GangCoordination.ConfigTransport
 }
 
 // collectTorchrunGangEnvVars copies torchrun's static identity contract from
