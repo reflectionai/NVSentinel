@@ -29,12 +29,17 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 )
 
 // PreflightRunOncePerRayClusterAnnotation names the preflight to skip after
 // the owning RayCluster has reached its first fully provisioned state.
 const PreflightRunOncePerRayClusterAnnotation = "nvsentinel.nvidia.com/preflight-run-once-per-raycluster"
+
+var rayClusterGVR = schema.GroupVersionResource{
+	Group: "ray.io", Version: "v1", Resource: "rayclusters",
+}
 
 // GangRegistration is sent to the controller to register a pod with its gang.
 type GangRegistration struct {
@@ -54,14 +59,14 @@ type GangRegistrationFunc func(ctx context.Context, reg GangRegistration)
 type Handler struct {
 	injector         *Injector
 	onGangRegister   GangRegistrationFunc
-	rayClusterReader client.Reader
+	rayClusterClient dynamic.Interface
 }
 
-func NewHandler(cfg *config.Config, discoverer gang.GangDiscoverer, onGangRegister GangRegistrationFunc, rayClusterReader client.Reader) *Handler {
+func NewHandler(cfg *config.Config, discoverer gang.GangDiscoverer, onGangRegister GangRegistrationFunc, rayClusterClient dynamic.Interface) *Handler {
 	return &Handler{
 		injector:         NewInjector(cfg, discoverer),
 		onGangRegister:   onGangRegister,
-		rayClusterReader: rayClusterReader,
+		rayClusterClient: rayClusterClient,
 	}
 }
 
@@ -234,7 +239,9 @@ func (h *Handler) omitCompletedRayClusterPreflight(ctx context.Context, pod *cor
 }
 
 func (h *Handler) rayClusterProvisioned(ctx context.Context, pod *corev1.Pod) bool {
-	if h.rayClusterReader == nil {
+	if h.rayClusterClient == nil {
+		slog.Warn("RayCluster client is unavailable; keeping preflight",
+			"namespace", pod.Namespace, "pod", pod.Name)
 		return false
 	}
 
@@ -243,18 +250,31 @@ func (h *Handler) rayClusterProvisioned(ctx context.Context, pod *corev1.Pod) bo
 		return false
 	}
 
-	rayCluster := &unstructured.Unstructured{}
-	rayCluster.SetAPIVersion(owner.APIVersion)
-	rayCluster.SetKind(owner.Kind)
-	if h.rayClusterReader.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: owner.Name}, rayCluster) != nil {
+	rayCluster, err := h.rayClusterClient.Resource(rayClusterGVR).Namespace(pod.Namespace).Get(
+		ctx, owner.Name, metav1.GetOptions{},
+	)
+	if err != nil {
+		slog.Warn("Failed to read owning RayCluster; keeping preflight",
+			"namespace", pod.Namespace, "pod", pod.Name,
+			"rayCluster", owner.Name, "error", err)
 		return false
 	}
 
 	if rayCluster.GetUID() != owner.UID {
+		slog.Warn("Owning RayCluster UID changed; keeping preflight",
+			"namespace", pod.Namespace, "pod", pod.Name,
+			"rayCluster", owner.Name, "ownerUID", owner.UID,
+			"currentUID", rayCluster.GetUID())
 		return false
 	}
 
-	conditions, _, _ := unstructured.NestedSlice(rayCluster.Object, "status", "conditions")
+	conditions, _, err := unstructured.NestedSlice(rayCluster.Object, "status", "conditions")
+	if err != nil {
+		slog.Warn("Failed to read owning RayCluster conditions; keeping preflight",
+			"namespace", pod.Namespace, "pod", pod.Name,
+			"rayCluster", owner.Name, "error", err)
+		return false
+	}
 	for _, rawCondition := range conditions {
 		condition, ok := rawCondition.(map[string]any)
 		if ok && condition["type"] == "RayClusterProvisioned" && condition["status"] == "True" {

@@ -33,10 +33,10 @@ import (
 	"github.com/nvidia/nvsentinel/preflight/pkg/controller"
 	"github.com/nvidia/nvsentinel/preflight/pkg/gang"
 	"github.com/nvidia/nvsentinel/preflight/pkg/webhook"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -45,9 +45,8 @@ var (
 	commit  = "none"
 	date    = "unknown"
 
-	discoverer       gang.GangDiscoverer
-	onGangRegister   webhook.GangRegistrationFunc
-	rayClusterReader client.Reader
+	discoverer     gang.GangDiscoverer
+	onGangRegister webhook.GangRegistrationFunc
 )
 
 func main() {
@@ -91,13 +90,23 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	restConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get in-cluster config: %w", err)
+	}
+
+	rayClusterClient, err := dynamic.NewForConfig(restConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create RayCluster client: %w", err)
+	}
+
 	if cfg.GangCoordination.Enabled {
-		if err := setupGangCoordination(ctx, cfg, stop); err != nil {
+		if err := setupGangCoordination(ctx, cfg, stop, restConfig); err != nil {
 			return err
 		}
 	}
 
-	handler := webhook.NewHandler(cfg, discoverer, onGangRegister, rayClusterReader)
+	handler := webhook.NewHandler(cfg, discoverer, onGangRegister, rayClusterClient)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", handler.HandleMutate)
@@ -106,17 +115,16 @@ func run() error {
 	return runHTTPServer(ctx, mux, certDir, port)
 }
 
-func setupGangCoordination(ctx context.Context, cfg *config.Config, stop context.CancelFunc) error {
-	restConfig, err := rest.InClusterConfig()
-	if err != nil {
-		return fmt.Errorf("failed to get in-cluster config: %w", err)
-	}
-
+func setupGangCoordination(
+	ctx context.Context,
+	cfg *config.Config,
+	stop context.CancelFunc,
+	restConfig *rest.Config,
+) error {
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{})
 	if err != nil {
 		return fmt.Errorf("failed to create controller manager: %w", err)
 	}
-	rayClusterReader = mgr.GetAPIReader()
 
 	discoverer, err = gang.NewDiscovererFromConfig(
 		cfg.GangDiscovery,

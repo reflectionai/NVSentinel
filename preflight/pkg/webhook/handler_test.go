@@ -34,7 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
 
 func buildAdmissionReview(pod *corev1.Pod, uid types.UID, namespace string) []byte {
@@ -381,12 +381,12 @@ func TestProvisionedRayClusterSkipsOnlyNamedPreflight(t *testing.T) {
 	rayCluster.SetNamespace("default")
 	rayCluster.SetName("ray-cluster")
 	rayCluster.SetUID("ray-cluster-uid")
-	reader := fake.NewClientBuilder().WithObjects(rayCluster).Build()
+	rayClusterClient := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), rayCluster)
 	cfg := handlerConfig()
 	cfg.InitContainers = append(cfg.InitContainers, config.InitContainerSpec{
 		Container: corev1.Container{Name: "preflight-sdc-replay-temporal"},
 	})
-	handler := NewHandler(cfg, nil, nil, reader)
+	handler := NewHandler(cfg, nil, nil, rayClusterClient)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "default",
