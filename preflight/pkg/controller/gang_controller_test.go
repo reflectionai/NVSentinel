@@ -160,6 +160,37 @@ func TestGangController_WebhookRegistration(t *testing.T) {
 		assert.Empty(t, configMaps.Items)
 	})
 
+	t.Run("registration transport overrides TCPStore config", func(t *testing.T) {
+		ctx := context.Background()
+		scheme := runtime.NewScheme()
+		require.NoError(t, corev1.AddToScheme(scheme))
+		kubeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+		cfg := &config.Config{FileConfig: config.FileConfig{
+			GangCoordination: config.GangCoordinationConfig{
+				ConfigTransport: config.GangConfigTransportTCPStore,
+			},
+		}}
+		ctrl := NewGangController(
+			cfg,
+			kubeClient,
+			gang.NewCoordinator(kubeClient, gang.DefaultCoordinatorConfig()),
+			newGangDiscoverer("ray-gang", 2),
+		)
+		ctrl.RegisterPod(ctx, webhook.GangRegistration{
+			Namespace:       "default",
+			PodName:         "ray-worker",
+			GangID:          "ray-gang",
+			ConfigMapName:   coordinator.ConfigMapName("ray-gang"),
+			ConfigTransport: config.GangConfigTransportConfigMap,
+		})
+
+		var configMaps corev1.ConfigMapList
+		require.NoError(t, kubeClient.List(ctx, &configMaps, client.InNamespace("default")))
+		require.Len(t, configMaps.Items, 1)
+		assert.Equal(t, coordinator.ConfigMapName("ray-gang"), configMaps.Items[0].Name)
+	})
+
 	t.Run("creates skeleton ConfigMap", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
