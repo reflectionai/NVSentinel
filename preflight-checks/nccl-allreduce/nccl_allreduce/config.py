@@ -27,6 +27,10 @@ DEFAULT_MESSAGE_SIZES = "4G,8G"
 DEFAULT_BENCHMARK_ITERS = 20
 DEFAULT_WARMUP_ITERS = 5
 DEFAULT_REDUCE_OP = "sum"
+# Per-collective wall-clock timeout. Healthy 8 GB all-reduce on a 4096-rank
+# gang completes in <10s; 120s leaves ample headroom while still surfacing a
+# deadlocked peer fast enough to avoid wedging the surviving ranks for hours.
+DEFAULT_COLLECTIVE_TIMEOUT_SECONDS = 120
 
 
 @dataclass
@@ -38,6 +42,11 @@ class Config:
         bw_threshold_gbps: Minimum acceptable bus bandwidth in GB/s.
         skip_bandwidth_check: Skip bandwidth threshold validation; pass if benchmark completes.
         gang_timeout_seconds: Timeout for gang formation in seconds.
+        collective_timeout_seconds: Per-collective wall-clock timeout (seconds).
+            Forwarded to ``torch.distributed.init_process_group(timeout=...)``;
+            combined with ``TORCH_NCCL_ASYNC_ERROR_HANDLING=1`` this aborts a
+            collective that has stalled instead of letting surviving ranks
+            block indefinitely when one peer drops out.
         message_sizes: Comma-separated message sizes to test (e.g., "4G,8G").
         benchmark_iters: Number of benchmark iterations per size.
         warmup_iters: Number of warmup iterations before timing.
@@ -52,6 +61,7 @@ class Config:
     bw_threshold_gbps: float
     skip_bandwidth_check: bool
     gang_timeout_seconds: int
+    collective_timeout_seconds: int
     message_sizes: str
     benchmark_iters: int
     warmup_iters: int
@@ -84,6 +94,10 @@ class Config:
             "GANG_TIMEOUT_SECONDS",
             DEFAULT_GANG_TIMEOUT_SECONDS,
         )
+        collective_timeout_seconds = _parse_int(
+            "COLLECTIVE_TIMEOUT_SECONDS",
+            DEFAULT_COLLECTIVE_TIMEOUT_SECONDS,
+        )
         message_sizes = os.getenv("MESSAGE_SIZES", DEFAULT_MESSAGE_SIZES)
         benchmark_iters = _parse_int("BENCHMARK_ITERS", DEFAULT_BENCHMARK_ITERS)
         warmup_iters = _parse_int("WARMUP_ITERS", DEFAULT_WARMUP_ITERS, min_value=0)
@@ -111,6 +125,7 @@ class Config:
             bw_threshold_gbps=bw_threshold_gbps,
             skip_bandwidth_check=skip_bandwidth_check,
             gang_timeout_seconds=gang_timeout_seconds,
+            collective_timeout_seconds=collective_timeout_seconds,
             message_sizes=message_sizes,
             benchmark_iters=benchmark_iters,
             warmup_iters=warmup_iters,
