@@ -33,6 +33,10 @@ RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags="-s -w -X main.version=${VERSI
 
 FROM nvcr.io/nvidia/cuda:13.2.1-base-ubuntu22.04
 
+# The CUDA base ships a stale ca-certificates; take the archive's current bundle.
+RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd -r nvsentinel && useradd -r -g nvsentinel nvsentinel
 
 WORKDIR /app
